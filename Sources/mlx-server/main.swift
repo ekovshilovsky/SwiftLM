@@ -59,7 +59,23 @@ struct MLXServer: AsyncParsableCommand {
         let modelId = model
 
         // ── Load model ──
-        let modelConfig = ModelConfiguration(id: modelId)
+        // Auto-detect: if --model points to an existing local directory, load
+        // from disk directly (no download). Otherwise treat as HF repo ID.
+        let modelConfig: ModelConfiguration
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: modelId) {
+            var isDir: ObjCBool = false
+            fileManager.fileExists(atPath: modelId, isDirectory: &isDir)
+            if isDir.boolValue {
+                print("[mlx-server] Loading from local directory: \(modelId)")
+                modelConfig = ModelConfiguration(directory: URL(filePath: modelId))
+            } else {
+                modelConfig = ModelConfiguration(id: modelId)
+            }
+        } else {
+            modelConfig = ModelConfiguration(id: modelId)
+        }
+
         let container = try await LLMModelFactory.shared.loadContainer(
             configuration: modelConfig
         ) { progress in
