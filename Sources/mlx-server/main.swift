@@ -64,6 +64,9 @@ struct MLXServer: AsyncParsableCommand {
     @Option(name: .long, help: "GPU memory limit in MB (default: system limit)")
     var memLimit: Int?
 
+    @Option(name: .long, help: "API key for bearer token authentication")
+    var apiKey: String?
+
     @Option(name: .long, help: "Allowed CORS origin (* for all, or a specific origin URL)")
     var cors: String?
 
@@ -122,6 +125,7 @@ struct MLXServer: AsyncParsableCommand {
 
         let parallelSlots = self.parallel
         let corsOrigin = self.cors
+        let apiKeyValue = self.apiKey
 
         // ── Memory limit enforcement ──
         if let memLimitMB = self.memLimit {
@@ -141,7 +145,8 @@ struct MLXServer: AsyncParsableCommand {
         let penaltyStr = config.repeatPenalty.map { String($0) } ?? "disabled"
         let corsStr = corsOrigin ?? "disabled"
         let memLimitStr = self.memLimit.map { "\($0)MB" } ?? "system_default"
-        print("[mlx-server] Config: ctx_size=\(ctxSizeStr), temp=\(config.temp), top_p=\(config.topP), repeat_penalty=\(penaltyStr), parallel=\(parallelSlots), cors=\(corsStr), mem_limit=\(memLimitStr)")
+        let authStr = apiKeyValue != nil ? "enabled" : "disabled"
+        print("[mlx-server] Config: ctx_size=\(ctxSizeStr), temp=\(config.temp), top_p=\(config.topP), repeat_penalty=\(penaltyStr), parallel=\(parallelSlots), cors=\(corsStr), mem_limit=\(memLimitStr), auth=\(authStr)")
 
         // ── Build Hummingbird router ──
         let router = Router()
@@ -149,6 +154,11 @@ struct MLXServer: AsyncParsableCommand {
         // ── CORS middleware ──
         if let origin = corsOrigin {
             router.add(middleware: CORSMiddleware(allowedOrigin: origin))
+        }
+
+        // ── API key authentication middleware ──
+        if let key = apiKeyValue {
+            router.add(middleware: ApiKeyMiddleware(apiKey: key))
         }
 
         // Health (enhanced v2 with memory + stats)
@@ -830,6 +840,36 @@ struct CORSMiddleware<Context: RequestContext>: RouterMiddleware {
         fields.append(HTTPField(name: HTTPField.Name("Access-Control-Allow-Methods")!, value: "GET, POST, OPTIONS"))
         fields.append(HTTPField(name: HTTPField.Name("Access-Control-Allow-Headers")!, value: "Content-Type, Authorization"))
         return HTTPFields(fields)
+    }
+}
+
+// ── API Key Authentication Middleware ────────────────────────────────────────
+
+struct ApiKeyMiddleware<Context: RequestContext>: RouterMiddleware {
+    let apiKey: String
+
+    func handle(_ request: Request, context: Context, next: (Request, Context) async throws -> Response) async throws -> Response {
+        // Exempt health and metrics endpoints from auth
+        let path = request.uri.path
+        if path == "/health" || path == "/metrics" {
+            return try await next(request, context)
+        }
+
+        // Check Authorization header: "Bearer <key>"
+        let authHeader = request.headers[values: .authorization].first ?? ""
+        let expectedHeader = "Bearer \(apiKey)"
+
+        if authHeader == expectedHeader || authHeader == apiKey {
+            return try await next(request, context)
+        }
+
+        // Unauthorized
+        let errorPayload = "{\"error\":{\"message\":\"Invalid API key\",\"type\":\"invalid_request_error\",\"code\":\"invalid_api_key\"}}"
+        return Response(
+            status: .unauthorized,
+            headers: jsonHeaders(),
+            body: .init(byteBuffer: ByteBuffer(string: errorPayload))
+        )
     }
 }
 

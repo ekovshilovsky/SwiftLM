@@ -39,6 +39,11 @@ cleanup() {
         kill "$CORS_SERVER_PID" 2>/dev/null || true
         wait "$CORS_SERVER_PID" 2>/dev/null || true
     fi
+    if [ -n "${AUTH_SERVER_PID:-}" ]; then
+        log "Stopping auth server (PID $AUTH_SERVER_PID)"
+        kill "$AUTH_SERVER_PID" 2>/dev/null || true
+        wait "$AUTH_SERVER_PID" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 
@@ -609,6 +614,86 @@ if [ -n "${CORS_SERVER_PID:-}" ]; then
     kill "$CORS_SERVER_PID" 2>/dev/null || true
     wait "$CORS_SERVER_PID" 2>/dev/null || true
     unset CORS_SERVER_PID
+fi
+
+# ── Test 21: API key authentication ─────────────────────────────────
+AUTH_PORT=$((PORT + 2))
+AUTH_KEY="test-secret-key-12345"
+log "Test 21: API key authentication (--api-key)"
+"$BINARY" --model "$MODEL" --port "$AUTH_PORT" --host "$HOST" --api-key "$AUTH_KEY" &
+AUTH_SERVER_PID=$!
+
+# Wait for auth server to be ready
+for i in $(seq 1 60); do
+    if curl -sf "http://${HOST}:${AUTH_PORT}/health" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+if curl -sf "http://${HOST}:${AUTH_PORT}/health" >/dev/null 2>&1; then
+    # Test 1: Unauthenticated request should get 401
+    UNAUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://${HOST}:${AUTH_PORT}/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d "{\"model\":\"$MODEL\",\"max_tokens\":5,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}")
+
+    if [ "$UNAUTH_CODE" = "401" ]; then
+        pass "Auth: unauthenticated request returns 401"
+    else
+        fail "Auth: expected 401, got $UNAUTH_CODE"
+    fi
+
+    # Test 2: Wrong key should get 401
+    WRONG_KEY_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://${HOST}:${AUTH_PORT}/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer wrong-key" \
+        -d "{\"model\":\"$MODEL\",\"max_tokens\":5,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}")
+
+    if [ "$WRONG_KEY_CODE" = "401" ]; then
+        pass "Auth: wrong key returns 401"
+    else
+        fail "Auth: expected 401 for wrong key, got $WRONG_KEY_CODE"
+    fi
+
+    # Test 3: Correct key should succeed
+    AUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://${HOST}:${AUTH_PORT}/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $AUTH_KEY" \
+        -d "{\"model\":\"$MODEL\",\"max_tokens\":5,\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}")
+
+    if [ "$AUTH_CODE" = "200" ]; then
+        pass "Auth: valid key returns 200"
+    else
+        fail "Auth: expected 200 with valid key, got $AUTH_CODE"
+    fi
+
+    # Test 4: Health endpoint should be exempt from auth
+    HEALTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${HOST}:${AUTH_PORT}/health")
+
+    if [ "$HEALTH_CODE" = "200" ]; then
+        pass "Auth: /health exempt from auth (200 without key)"
+    else
+        fail "Auth: /health should be exempt, got $HEALTH_CODE"
+    fi
+
+    # Test 5: Metrics endpoint should be exempt from auth
+    METRICS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${HOST}:${AUTH_PORT}/metrics")
+
+    if [ "$METRICS_CODE" = "200" ]; then
+        pass "Auth: /metrics exempt from auth (200 without key)"
+    else
+        fail "Auth: /metrics should be exempt, got $METRICS_CODE"
+    fi
+else
+    log "  ⚠️  Auth server didn't start. Skipping auth tests."
+    pass "Auth: skipped (server didn't start)"
+fi
+
+# Clean up auth server
+if [ -n "${AUTH_SERVER_PID:-}" ]; then
+    kill "$AUTH_SERVER_PID" 2>/dev/null || true
+    wait "$AUTH_SERVER_PID" 2>/dev/null || true
+    unset AUTH_SERVER_PID
 fi
 
 # ── Results ──────────────────────────────────────────────────────────
