@@ -888,7 +888,7 @@ func handleChatCompletion(
     let systemHash = systemPromptText.hashValue
 
     // llama-server style: announce prefill start
-    print("srv  slot_launch: id 0 | prompt=\(promptTokenCount)t | prefilling...")
+    print("srv  slot_launch: id 0 | prompt=\(promptTokenCount)t | thinking=\(enableThinking) | prefilling...")
     fflush(stdout)
     let prefillStart = Date()
 
