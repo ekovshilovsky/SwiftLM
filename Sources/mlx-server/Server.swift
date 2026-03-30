@@ -945,19 +945,89 @@ func handleChatCompletion(
         return handleChatStreaming(
             stream: stream, modelId: modelId, stopSequences: stopSequences,
             includeUsage: includeUsage, promptTokenCount: promptTokenCount,
-            jsonMode: jsonMode, semaphore: semaphore, stats: stats,
-            genStart: genStart, prefillStart: prefillStart
+            enableThinking: enableThinking, jsonMode: jsonMode, semaphore: semaphore,
+            stats: stats, genStart: genStart, prefillStart: prefillStart
         )
     } else {
         return try await handleChatNonStreaming(
             stream: stream, modelId: modelId, stopSequences: stopSequences,
-            promptTokenCount: promptTokenCount, jsonMode: jsonMode, semaphore: semaphore,
+            promptTokenCount: promptTokenCount, enableThinking: enableThinking,
+            jsonMode: jsonMode, semaphore: semaphore,
             stats: stats, genStart: genStart, prefillStart: prefillStart
         )
     }
 }
 
+// ── Thinking State Tracker ────────────────────────────────────────────────────
+
+/// Parses the raw token stream from a thinking-capable model and separates
+/// <think>…</think> content from the final response content.
+/// Matches llama-server's behaviour: thinking tokens → delta.reasoning_content,
+/// response tokens → delta.content (content is nil while thinking).
+struct ThinkingStateTracker {
+    enum Phase { case thinking, responding }
+    private(set) var phase: Phase = .responding
+    private var buffer = ""  // accumulates chars looking for tag boundaries
+
+    /// Feed the next text fragment. Returns (reasoningContent, responseContent)
+    /// where either value may be empty but never both non-empty simultaneously.
+    mutating func process(_ text: String) -> (reasoning: String, content: String) {
+        buffer += text
+        var reasoning = ""
+        var content = ""
+
+        while !buffer.isEmpty {
+            switch phase {
+            case .responding:
+                if let range = buffer.range(of: "<think>") {
+                    // Flush text before the tag as response content
+                    content += String(buffer[buffer.startIndex..<range.lowerBound])
+                    buffer.removeSubrange(buffer.startIndex...range.upperBound.index(before: range.upperBound))
+                    phase = .thinking
+                } else if buffer.hasSuffix("<") || buffer.hasSuffix("<t") || buffer.hasSuffix("<th") ||
+                          buffer.hasSuffix("<thi") || buffer.hasSuffix("<thin") || buffer.hasSuffix("<think") {
+                    // Partial tag — hold in buffer until we know more
+                    return (reasoning, content)
+                } else {
+                    content += buffer
+                    buffer = ""
+                }
+            case .thinking:
+                if let range = buffer.range(of: "</think>") {
+                    // Flush reasoning before the closing tag
+                    reasoning += String(buffer[buffer.startIndex..<range.lowerBound])
+                    buffer.removeSubrange(buffer.startIndex...range.upperBound.index(before: range.upperBound))
+                    phase = .responding
+                } else if isSuffixOfClosingTag(buffer) {
+                    // Partial closing tag — hold in buffer
+                    return (reasoning, content)
+                } else {
+                    reasoning += buffer
+                    buffer = ""
+                }
+            }
+        }
+        return (reasoning, content)
+    }
+
+    private func isSuffixOfClosingTag(_ s: String) -> Bool {
+        let tag = "</think>"
+        // Return true if `s` ends with any prefix of `tag` of length >= 1
+        for len in stride(from: min(s.count, tag.count), through: 1, by: -1) {
+            let tagPrefix = String(tag.prefix(len))
+            if s.hasSuffix(tagPrefix) { return true }
+        }
+        return false
+    }
+}
+
 // ── Chat Streaming ───────────────────────────────────────────────────────────
+
+/// A lightweight actor-based boolean flag used to coordinate the prefill heartbeat task.
+private actor BoolFlag {
+    private(set) var value: Bool = false
+    func set() { value = true }
+}
 
 func handleChatStreaming(
     stream: AsyncStream<Generation>,
@@ -965,6 +1035,7 @@ func handleChatStreaming(
     stopSequences: [String],
     includeUsage: Bool,
     promptTokenCount: Int,
+    enableThinking: Bool = false,
     jsonMode: Bool = false,
     semaphore: AsyncSemaphore,
     stats: ServerStats,
@@ -972,6 +1043,21 @@ func handleChatStreaming(
     prefillStart: Date
 ) -> Response {
     let (sseStream, cont) = AsyncStream<String>.makeStream()
+
+    // ── Prefill heartbeat: emit progress events while prompt is being processed ──
+    // This prevents clients from seeing a silent/dead connection during long prefills.
+    let prefillDone = BoolFlag()
+    Task {
+        var elapsed = 0
+        while await !prefillDone.value {
+            try? await Task.sleep(for: .seconds(2))
+            if await !prefillDone.value {
+                elapsed += 2
+                _ = cont.yield(ssePrefillChunk(modelId: modelId, promptTokens: promptTokenCount, elapsedSeconds: elapsed))
+            }
+        }
+    }
+
     Task {
         var hasToolCalls = false
         var toolCallIndex = 0
@@ -979,6 +1065,8 @@ func handleChatStreaming(
         var fullText = ""
         var stopped = false
         var firstToken = true
+        var tracker = ThinkingStateTracker()
+
         for await generation in stream {
             if stopped { break }
             switch generation {
@@ -989,8 +1077,9 @@ func handleChatStreaming(
                 if completionTokenCount % 8 == 0 {
                     try? await Task.sleep(for: .microseconds(50))
                 }
-                // Real-time stdout: on first token, log prefill completion + start generate line
+                // Signal first token — stops the prefill heartbeat task
                 if firstToken {
+                    await prefillDone.set()
                     let prefillDur = Date().timeIntervalSince(prefillStart)
                     let prefillTokPerSec = prefillDur > 0 ? Double(promptTokenCount) / prefillDur : 0
                     print("srv  slot update: id 0 | prefill done | n_tokens=\(promptTokenCount), t=\(String(format: "%.2f", prefillDur))s, \(String(format: "%.1f", prefillTokPerSec))t/s")
@@ -999,14 +1088,23 @@ func handleChatStreaming(
                 }
                 print(text, terminator: "")
                 fflush(stdout)
-                // ── Stop sequence check ──
-                if let (trimmedText, _) = checkStopSequences(fullText, stopSequences: stopSequences) {
+
+                // ── Route text through thinking state machine ──
+                let (reasoningText, contentText) = enableThinking
+                    ? tracker.process(text)
+                    : ("", text)
+
+                // ── Stop sequence check (operate on full accumulated text) ──
+                if let (trimmedFull, _) = checkStopSequences(fullText, stopSequences: stopSequences) {
+                    // Emit any final partial content that hasn't been sent yet
                     let emittedSoFar = fullText.count - text.count
-                    if trimmedText.count > emittedSoFar {
-                        let partialText = String(trimmedText.suffix(trimmedText.count - emittedSoFar))
-                        cont.yield(sseChunk(modelId: modelId, delta: partialText, finishReason: nil))
+                    if trimmedFull.count > emittedSoFar {
+                        let partialText = String(trimmedFull.suffix(trimmedFull.count - emittedSoFar))
+                        let (r, c) = enableThinking ? tracker.process(partialText) : ("", partialText)
+                        cont.yield(sseChunk(modelId: modelId, reasoningContent: r.isEmpty ? nil : r,
+                                            content: c.isEmpty ? nil : c, finishReason: nil))
                     }
-                    cont.yield(sseChunk(modelId: modelId, delta: "", finishReason: "stop"))
+                    cont.yield(sseChunk(modelId: modelId, reasoningContent: nil, content: nil, finishReason: "stop"))
                     if includeUsage {
                         cont.yield(sseUsageChunk(modelId: modelId, promptTokens: promptTokenCount, completionTokens: completionTokenCount))
                     }
@@ -1014,14 +1112,28 @@ func handleChatStreaming(
                     cont.finish()
                     stopped = true
                 } else {
-                    cont.yield(sseChunk(modelId: modelId, delta: text, finishReason: nil))
+                    // Emit the chunk — reasoning_content and/or content as appropriate
+                    let hasReasoning = !reasoningText.isEmpty
+                    let hasContent = !contentText.isEmpty
+                    if hasReasoning || hasContent {
+                        cont.yield(sseChunk(
+                            modelId: modelId,
+                            reasoningContent: hasReasoning ? reasoningText : nil,
+                            content: hasContent ? contentText : nil,
+                            finishReason: nil
+                        ))
+                    }
+                    // If tracker buffer is holding a partial tag, nothing to emit yet — that's fine.
                 }
+
             case .toolCall(let tc):
                 hasToolCalls = true
                 let argsJson = serializeToolCallArgs(tc.function.arguments)
                 cont.yield(sseToolCallChunk(modelId: modelId, index: toolCallIndex, name: tc.function.name, arguments: argsJson))
                 toolCallIndex += 1
+
             case .info(let info):
+                await prefillDone.set()
                 if !stopped {
                     var reason: String
                     switch info.stopReason {
@@ -1030,7 +1142,7 @@ func handleChatStreaming(
                     case .cancelled, .stop:
                         reason = hasToolCalls ? "tool_calls" : "stop"
                     }
-                    cont.yield(sseChunk(modelId: modelId, delta: "", finishReason: reason))
+                    cont.yield(sseChunk(modelId: modelId, reasoningContent: nil, content: nil, finishReason: reason))
                     if includeUsage {
                         cont.yield(sseUsageChunk(modelId: modelId, promptTokens: promptTokenCount, completionTokens: completionTokenCount))
                     }
@@ -1080,6 +1192,7 @@ func handleChatNonStreaming(
     modelId: String,
     stopSequences: [String],
     promptTokenCount: Int,
+    enableThinking: Bool = false,
     jsonMode: Bool = false,
     semaphore: AsyncSemaphore,
     stats: ServerStats,
@@ -1128,8 +1241,6 @@ func handleChatNonStreaming(
     await stats.requestFinished(tokens: completionTokenCount, duration: duration)
     await semaphore.signal()
 
-
-
     // ── Apply stop sequences to final text ──
     var finishReason: String
     switch generationStopReason {
@@ -1143,16 +1254,26 @@ func handleChatNonStreaming(
         finishReason = "stop"
     }
 
+    // ── Thinking: extract <think>…</think> into reasoning_content ──
+    var reasoningContent: String? = nil
+    var responseContent = fullText
+    if enableThinking {
+        let (extracted, remaining) = extractThinkingBlock(from: fullText)
+        if let extracted {
+            reasoningContent = extracted
+            responseContent = remaining
+        }
+    }
+
     // ── JSON mode validation ──
     if jsonMode {
-        // Strip markdown code fences if model wrapped response
-        let stripped = fullText
+        let stripped = responseContent
             .replacingOccurrences(of: "```json\n", with: "")
             .replacingOccurrences(of: "```json", with: "")
             .replacingOccurrences(of: "```\n", with: "")
             .replacingOccurrences(of: "```", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        fullText = stripped
+        responseContent = stripped
     }
 
     let totalTokens = promptTokenCount + completionTokenCount
@@ -1167,7 +1288,8 @@ func handleChatNonStreaming(
                 index: 0,
                 message: AssistantMessage(
                     role: "assistant",
-                    content: fullText.isEmpty && hasToolCalls ? nil : fullText,
+                    content: responseContent.isEmpty && hasToolCalls ? nil : responseContent,
+                    reasoningContent: reasoningContent,
                     toolCalls: hasToolCalls ? collectedToolCalls : nil
                 ),
                 finishReason: hasToolCalls ? "tool_calls" : finishReason
@@ -1186,6 +1308,23 @@ func handleChatNonStreaming(
         headers: jsonHeaders(),
         body: .init(byteBuffer: ByteBuffer(data: encoded))
     )
+}
+
+/// Extracts a `<think>…</think>` block from the start of the text.
+/// Returns (thinkingContent, remainingContent) or (nil, original) if no block found.
+func extractThinkingBlock(from text: String) -> (String?, String) {
+    guard let startRange = text.range(of: "<think>"),
+          let endRange = text.range(of: "</think>") else {
+        // If there's an unclosed <think> block (still thinking when stopped), extract it anyway
+        if let startRange = text.range(of: "<think>") {
+            let thinking = String(text[startRange.upperBound...])
+            return (thinking.isEmpty ? nil : thinking, "")
+        }
+        return (nil, text)
+    }
+    let thinking = String(text[startRange.upperBound..<endRange.lowerBound])
+    let remaining = String(text[endRange.upperBound...]).trimmingCharacters(in: .newlines)
+    return (thinking.isEmpty ? nil : thinking, remaining)
 }
 
 // ── Text Completions Handler ─────────────────────────────────────────────────
@@ -1492,10 +1631,21 @@ func sseHeaders() -> HTTPFields {
     ])
 }
 
-func sseChunk(modelId: String, delta: String, finishReason: String?) -> String {
+/// Build a chat.completion.chunk SSE event.
+/// - reasoningContent: if non-nil, added to delta as "reasoning_content" (llama-server thinking style)
+/// - content: if non-nil, added to delta as "content" (standard response text)
+/// Both may be nil simultaneously (used for the final finish_reason chunk).
+func sseChunk(modelId: String, reasoningContent: String?, content: String?, finishReason: String?) -> String {
     var deltaObj: [String: Any] = [:]
-    if !delta.isEmpty {
-        deltaObj = ["role": "assistant", "content": delta]
+    // Always include role on the very first chunk when we have content
+    if reasoningContent != nil || content != nil {
+        deltaObj["role"] = "assistant"
+    }
+    if let rc = reasoningContent {
+        deltaObj["reasoning_content"] = rc
+    }
+    if let c = content {
+        deltaObj["content"] = c
     }
     var choiceObj: [String: Any] = [
         "index": 0,
@@ -1510,6 +1660,24 @@ func sseChunk(modelId: String, delta: String, finishReason: String?) -> String {
         "created": Int(Date().timeIntervalSince1970),
         "model": modelId,
         "choices": [choiceObj]
+    ]
+    let data = try! JSONSerialization.data(withJSONObject: chunk)
+    return "data: \(String(data: data, encoding: .utf8)!)\r\n\r\n"
+}
+
+/// Prefill-progress heartbeat chunk — emitted every 2s while the server is processing the prompt.
+/// Uses object type "prefill_progress" so clients can filter it without confusing it with real tokens.
+func ssePrefillChunk(modelId: String, promptTokens: Int, elapsedSeconds: Int) -> String {
+    let chunk: [String: Any] = [
+        "id": "prefill-\(UUID().uuidString)",
+        "object": "prefill_progress",
+        "created": Int(Date().timeIntervalSince1970),
+        "model": modelId,
+        "prefill": [
+            "status": "processing",
+            "prompt_tokens": promptTokens,
+            "elapsed_seconds": elapsedSeconds
+        ]
     ]
     let data = try! JSONSerialization.data(withJSONObject: chunk)
     return "data: \(String(data: data, encoding: .utf8)!)\r\n\r\n"
@@ -1761,10 +1929,21 @@ struct Choice: Encodable {
 struct AssistantMessage: Encodable {
     let role: String
     let content: String?
+    /// Separated reasoning/thinking content (llama-server compatible).
+    /// Only present when the model produced a <think>…</think> block.
+    let reasoningContent: String?
     let toolCalls: [ToolCallResponse]?
+
+    init(role: String, content: String?, reasoningContent: String? = nil, toolCalls: [ToolCallResponse]? = nil) {
+        self.role = role
+        self.content = content
+        self.reasoningContent = reasoningContent
+        self.toolCalls = toolCalls
+    }
 
     enum CodingKeys: String, CodingKey {
         case role, content
+        case reasoningContent = "reasoning_content"
         case toolCalls = "tool_calls"
     }
 }
