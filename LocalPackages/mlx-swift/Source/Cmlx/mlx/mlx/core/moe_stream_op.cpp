@@ -5,10 +5,16 @@
 #include "mlx/core/moe_stream_op.h"
 #include <iostream>
 #include <chrono>
+#include <atomic>
 #include "mlx/primitives.h"
 #include "mlx/backend/metal/device.h"
 #include "mlx/backend/metal/utils.h"
-#include <iostream>
+
+// Static SSD metric trackers for aggregate logging
+static std::atomic<size_t> g_total_bytes_read{0};
+static std::atomic<uint64_t> g_total_read_ns{0};
+static std::atomic<size_t> g_read_count{0};
+static std::atomic<uint64_t> g_last_log_ns{0};
 
 namespace mlx::core {
 
@@ -68,8 +74,33 @@ public:
         auto start_read = std::chrono::high_resolution_clock::now();
         streamer_->load_sync(block_offset, matrix_bytes, w.data<void>());
         auto end_read = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> read_ms = end_read - start_read;
-        std::cout << "[SSD] Read " << (matrix_bytes / 1024.0 / 1024.0) << " MB in " << read_ms.count() << " ms\n";
+
+        // ─────────────────────────────────────────────────────────────────────
+        // AGGREGATE LOGGING — 1-second metric intervals
+        // ─────────────────────────────────────────────────────────────────────
+        g_total_bytes_read += matrix_bytes;
+        g_total_read_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(end_read - start_read).count();
+        g_read_count++;
+
+        auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        uint64_t last = g_last_log_ns.load();
+        
+        // Output aggregated metrics once per second (1,000,000,000 ns)
+        if (now_ns - last >= 1000000000ULL) {
+            if (g_last_log_ns.compare_exchange_strong(last, now_ns)) {
+                size_t count = g_read_count.exchange(0);
+                size_t bytes = g_total_bytes_read.exchange(0);
+                uint64_t ns_time = g_total_read_ns.exchange(0);
+                
+                if (count > 0) {
+                    double avg_ms = (ns_time / 1000000.0) / count;
+                    double mb = bytes / (1024.0 * 1024.0);
+                    std::cout << "[⚡️ SSD Stream] " << mb << " MB/s over " 
+                              << count << " chunks | Avg latency per chunk: " 
+                              << avg_ms << " ms\n";
+                }
+            }
+        }
 
         auto& d = metal::device(mlx::core::Device::gpu);
 
