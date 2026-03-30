@@ -11,6 +11,8 @@
 #include "mlx/utils.h"
 #include <memory>
 #include <vector>
+#include <cstdint>
+#include <cstddef>
 
 namespace mlx::core {
 
@@ -36,3 +38,18 @@ MLX_API array streamed_gather_mm(
 );
 
 } // namespace mlx::core
+
+// ── Metrics snapshot forward declaration ─────────────────────────────────────
+// The struct is defined in mlx/c/fast.h (the Swift-visible Cmlx umbrella).
+// This extern "C" block makes the implementation in moe_stream_op.cpp link
+// correctly without C++ name mangling.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct MlxSSDMetricsSnapshot;
+void mlx_ssd_metrics_snapshot(struct MlxSSDMetricsSnapshot* out);
+
+#ifdef __cplusplus
+}
+#endif

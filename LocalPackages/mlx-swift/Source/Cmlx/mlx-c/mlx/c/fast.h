@@ -231,6 +231,19 @@ int mlx_fast_pread_into(
 
 /**@}*/
 
+// ── SSD Flash-Stream metrics snapshot ────────────────────────────────────────
+// Cumulative NVMe throughput stats since process start.
+// Call mlx_ssd_metrics_snapshot() from any thread to read without resetting counters.
+
+typedef struct MlxSSDMetricsSnapshot {
+    double   throughput_mb_per_s;  /* 10-s rolling window average (0 before first window) */
+    uint64_t total_bytes_read;     /* Lifetime bytes read from SSD */
+    uint64_t total_chunks;         /* Lifetime expert chunks loaded */
+    double   avg_chunk_latency_ms; /* Lifetime average per-chunk latency (ms) */
+} MlxSSDMetricsSnapshot;
+
+void mlx_ssd_metrics_snapshot(MlxSSDMetricsSnapshot* out);
+
 #ifdef __cplusplus
 }
 #endif

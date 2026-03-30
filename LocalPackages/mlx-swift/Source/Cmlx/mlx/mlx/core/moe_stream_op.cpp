@@ -12,10 +12,17 @@
 #include "mlx/backend/metal/utils.h"
 
 // Static SSD metric trackers for aggregate logging
-static std::atomic<size_t> g_total_bytes_read{0};
+static std::atomic<size_t>   g_total_bytes_read{0};
 static std::atomic<uint64_t> g_total_read_ns{0};
-static std::atomic<size_t> g_read_count{0};
+static std::atomic<size_t>   g_read_count{0};
 static std::atomic<uint64_t> g_last_log_ns{0};
+
+// Lifetime totals: never reset, read by /metrics endpoint
+static std::atomic<uint64_t> g_lifetime_bytes{0};
+static std::atomic<uint64_t> g_lifetime_ns{0};
+static std::atomic<uint64_t> g_lifetime_chunks{0};
+// Last-window throughput (MB/s) — written after each 10s window closes
+static std::atomic<double>   g_window_throughput_mbs{0.0};
 
 namespace mlx::core {
 
@@ -57,6 +64,11 @@ public:
         streamer_->load_sync(block_offset, matrix_bytes, o.data<void>());
         auto end_read = std::chrono::high_resolution_clock::now();
 
+        // Accumulate into lifetime totals (never reset)
+        g_lifetime_bytes  += matrix_bytes;
+        g_lifetime_ns     += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end_read - start_read).count());
+        g_lifetime_chunks += 1;
+
         // ─────────────────────────────────────────────────────────────────────
         // AGGREGATE LOGGING — 10-second metric intervals, printed to stderr so
         // the metric lines never interleave with the stdout token stream.
@@ -80,6 +92,8 @@ public:
                     double elapsed_s  = ns_t / 1e9;
                     double throughput_mbs = (bytes / (1024.0 * 1024.0)) / elapsed_s;
                     double avg_ms_per_chunk = (ns_t / 1'000'000.0) / count;
+                    // Persist for /metrics endpoint (non-resetting)
+                    g_window_throughput_mbs.store(throughput_mbs, std::memory_order_relaxed);
                     // Print to stderr — never touches the stdout token stream
                     std::cerr << "[⚡️ SSD Stream] "
                               << std::fixed << std::setprecision(0);
@@ -141,3 +155,28 @@ MLX_API array streamed_gather_mm(
 }
 
 } // namespace mlx::core
+
+// ── C-ABI metrics accessor (no name mangling — callable from Swift) ───────────
+// Define the struct here in the TU that owns it; fast.h has the matching
+// typedef so Swift and external C consumers see layout-compatible definitions.
+struct MlxSSDMetricsSnapshot {
+    double   throughput_mb_per_s;
+    uint64_t total_bytes_read;
+    uint64_t total_chunks;
+    double   avg_chunk_latency_ms;
+};
+
+extern "C" void mlx_ssd_metrics_snapshot(struct MlxSSDMetricsSnapshot* out) {
+    if (!out) return;
+    uint64_t bytes  = g_lifetime_bytes.load(std::memory_order_acquire);
+    uint64_t ns     = g_lifetime_ns.load(std::memory_order_acquire);
+    uint64_t chunks = g_lifetime_chunks.load(std::memory_order_acquire);
+    double   tput   = g_window_throughput_mbs.load(std::memory_order_acquire);
+
+    out->total_bytes_read     = bytes;
+    out->total_chunks         = chunks;
+    out->throughput_mb_per_s  = tput;
+    out->avg_chunk_latency_ms = (ns > 0 && chunks > 0)
+        ? (ns / 1'000'000.0) / static_cast<double>(chunks)
+        : 0.0;
+}

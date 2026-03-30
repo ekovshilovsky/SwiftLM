@@ -572,6 +572,24 @@ struct MLXServer: AsyncParsableCommand {
             lines.append("# HELP swiftlm_uptime_seconds Server uptime")
             lines.append("# TYPE swiftlm_uptime_seconds gauge")
             lines.append("swiftlm_uptime_seconds \(String(format: "%.0f", uptime))")
+
+            // ── SSD Flash-Stream metrics (only emitted when --stream-experts is active) ──
+            if isSSDStream {
+                let ssd = MLXFast.ssdMetricsSnapshot()
+                lines.append("# HELP swiftlm_ssd_throughput_mbps NVMe read throughput (10 s rolling average, MB/s)")
+                lines.append("# TYPE swiftlm_ssd_throughput_mbps gauge")
+                lines.append("swiftlm_ssd_throughput_mbps \(String(format: "%.1f", ssd.throughputMBperS))")
+                lines.append("# HELP swiftlm_ssd_bytes_read_total Lifetime bytes read from SSD for expert weights")
+                lines.append("# TYPE swiftlm_ssd_bytes_read_total counter")
+                lines.append("swiftlm_ssd_bytes_read_total \(ssd.totalBytesRead)")
+                lines.append("# HELP swiftlm_ssd_chunks_total Lifetime expert chunks loaded from SSD")
+                lines.append("# TYPE swiftlm_ssd_chunks_total counter")
+                lines.append("swiftlm_ssd_chunks_total \(ssd.totalChunks)")
+                lines.append("# HELP swiftlm_ssd_chunk_latency_ms Average per-chunk SSD read latency (ms, lifetime)")
+                lines.append("# TYPE swiftlm_ssd_chunk_latency_ms gauge")
+                lines.append("swiftlm_ssd_chunk_latency_ms \(String(format: "%.4f", ssd.avgChunkLatencyMS))")
+            }
+
             lines.append("")
             let metrics = lines.joined(separator: "\n")
             return Response(

@@ -278,6 +278,34 @@ public enum MLXFast {
         return (kTuple, vTuple)
     }
 
+    // ── SSD Flash-Stream Metrics ──────────────────────────────────────────────
+
+    /// Snapshot of cumulative SSD streaming throughput stats.
+    /// Safe to call from any thread at any time.
+    public struct SSDMetricsSnapshot: Sendable {
+        /// Rolling average throughput over the last 10-second window (MB/s).
+        /// Zero until the first 10 s window has elapsed.
+        public let throughputMBperS: Double
+        /// Lifetime bytes loaded from SSD since process start.
+        public let totalBytesRead:   UInt64
+        /// Lifetime expert chunks loaded from SSD since process start.
+        public let totalChunks:      UInt64
+        /// Lifetime average latency per expert chunk (ms).
+        public let avgChunkLatencyMS: Double
+    }
+
+    /// Read the current SSD Flash-Stream metrics without resetting any counters.
+    public static func ssdMetricsSnapshot() -> SSDMetricsSnapshot {
+        var raw = MlxSSDMetricsSnapshot()
+        mlx_ssd_metrics_snapshot(&raw)
+        return SSDMetricsSnapshot(
+            throughputMBperS:  raw.throughput_mb_per_s,
+            totalBytesRead:    raw.total_bytes_read,
+            totalChunks:       raw.total_chunks,
+            avgChunkLatencyMS: raw.avg_chunk_latency_ms
+        )
+    }
+
     public static func streamedGatherMM(
         x: MLXArray, wShape: MLXArray, activeExpert: UInt32, safetensorsPath: String, tensorName: String, stream: StreamOrDevice = .default
     ) -> MLXArray {
