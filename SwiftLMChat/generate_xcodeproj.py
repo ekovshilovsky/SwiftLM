@@ -69,6 +69,7 @@ core_sources = [
     ("../Sources/MLXInferenceCore/ModelStorage.swift",         uid(), uid()),
     ("../Sources/MLXInferenceCore/ModelDownloader.swift",      uid(), uid()),
     ("../Sources/MLXInferenceCore/ModelDownloadManager.swift", uid(), uid()),
+    ("../Sources/MLXInferenceCore/HFModelSearch.swift",        uid(), uid()),
     ("../Sources/MLXInferenceCore/InferenceEngine.swift",      uid(), uid()),
 ]
 

@@ -1,6 +1,29 @@
 // MessageBubble.swift — Chat message bubble + live streaming bubble
 import SwiftUI
 
+// MARK: — Shared adaptive colors
+
+private extension Color {
+    /// Assistant bubble background — works in both light and dark mode.
+    /// Light mode: warm near-white. Dark mode: elevated dark fill.
+    static var assistantBubble: Color {
+        #if os(macOS)
+        return Color(NSColor.controlBackgroundColor)
+        #else
+        return Color(UIColor.secondarySystemBackground)
+        #endif
+    }
+
+    /// Subtle inner tint for thinking disclosure group.
+    static var thinkingBubble: Color {
+        #if os(macOS)
+        return Color(NSColor.windowBackgroundColor)
+        #else
+        return Color(UIColor.tertiarySystemBackground)
+        #endif
+    }
+}
+
 // MARK: — Static Message Bubble
 
 struct MessageBubble: View {
@@ -15,27 +38,32 @@ struct MessageBubble: View {
             if !isUser {
                 // Avatar
                 Circle()
-                    .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .fill(LinearGradient(
+                        colors: [.blue, .purple],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    ))
                     .frame(width: 28, height: 28)
                     .overlay(
                         Image(systemName: "cpu")
-                            .font(.caption2)
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.white)
                     )
             }
 
             VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
                 Text(message.content)
+                    .font(.system(.body, design: .default))
                     .textSelection(.enabled)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(isUser ? Color.accentColor : Color(white: 0.92))
+                    .background(isUser ? Color.accentColor : Color.assistantBubble)
                     .foregroundStyle(isUser ? .white : .primary)
                     .clipShape(BubbleShape(isUser: isUser))
+                    .shadow(color: .black.opacity(0.06), radius: 2, x: 0, y: 1)
 
                 Text(message.timestamp, style: .time)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.tertiary)
             }
 
             if !isUser { Spacer(minLength: 60) }
@@ -48,32 +76,35 @@ struct MessageBubble: View {
 struct StreamingBubble: View {
     let text: String
     let thinkingText: String?
-    @State private var dotPhase = 0
+    @State private var cursorVisible = true
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             Circle()
-                .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .fill(LinearGradient(
+                    colors: [.blue, .purple],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                ))
                 .frame(width: 28, height: 28)
                 .overlay(
                     Image(systemName: "cpu")
-                        .font(.caption2)
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white)
                 )
 
             VStack(alignment: .leading, spacing: 6) {
-                // Thinking section (collapsed by default, shows thought process)
+                // Thinking section
                 if let thinking = thinkingText, !thinking.isEmpty {
                     DisclosureGroup {
                         Text(thinking)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(8)
-                            .background(Color(white: 0.95))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.thinkingBubble, in: RoundedRectangle(cornerRadius: 8))
                     } label: {
                         Label("Thinking…", systemImage: "brain")
-                            .font(.caption)
+                            .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -82,31 +113,33 @@ struct StreamingBubble: View {
                 if !text.isEmpty {
                     HStack(alignment: .bottom, spacing: 2) {
                         Text(text)
+                            .font(.system(.body, design: .default))
+                            .foregroundStyle(.primary)
                             .textSelection(.enabled)
                         // Blinking cursor
                         RoundedRectangle(cornerRadius: 1)
                             .frame(width: 2, height: 16)
                             .foregroundStyle(.blue)
-                            .opacity(dotPhase % 2 == 0 ? 1 : 0)
-                            .animation(.easeInOut(duration: 0.5).repeatForever(), value: dotPhase)
+                            .opacity(cursorVisible ? 1 : 0)
+                            .animation(.easeInOut(duration: 0.5).repeatForever(), value: cursorVisible)
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(Color(white: 0.92))
+                    .background(Color.assistantBubble)
                     .clipShape(BubbleShape(isUser: false))
+                    .shadow(color: .black.opacity(0.06), radius: 2, x: 0, y: 1)
                 } else {
-                    // Typing dots when no text yet
                     TypingIndicator()
                         .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color(white: 0.92))
+                        .padding(.vertical, 10)
+                        .background(Color.assistantBubble)
                         .clipShape(BubbleShape(isUser: false))
                 }
             }
 
             Spacer(minLength: 60)
         }
-        .onAppear { dotPhase = 1 }
+        .onAppear { cursorVisible = false }
     }
 }
 
@@ -116,21 +149,21 @@ struct TypingIndicator: View {
     @State private var phase = 0
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             ForEach(0..<3) { i in
                 Circle()
-                    .frame(width: 6, height: 6)
+                    .frame(width: 7, height: 7)
                     .foregroundStyle(.secondary)
-                    .scaleEffect(phase == i ? 1.3 : 0.8)
+                    .scaleEffect(phase == i ? 1.4 : 0.8)
                     .animation(
-                        .easeInOut(duration: 0.4).repeatForever().delay(Double(i) * 0.15),
+                        .easeInOut(duration: 0.45)
+                            .repeatForever()
+                            .delay(Double(i) * 0.15),
                         value: phase
                     )
             }
         }
-        .onAppear {
-            withAnimation { phase = 1 }
-        }
+        .onAppear { withAnimation { phase = 1 } }
     }
 }
 
@@ -138,15 +171,14 @@ struct TypingIndicator: View {
 
 struct BubbleShape: Shape {
     let isUser: Bool
-    let radius: CGFloat = 16
+    let radius: CGFloat = 18
 
     func path(in rect: CGRect) -> Path {
+        let tl: CGFloat = isUser ? radius : 4
+        let tr: CGFloat = isUser ? 4  : radius
+        let bl: CGFloat = radius
+        let br: CGFloat = radius
         var path = Path()
-        let tl = isUser ? radius : 4
-        let tr = isUser ? 4 : radius
-        let bl = radius
-        let br = radius
-
         path.move(to: CGPoint(x: rect.minX + tl, y: rect.minY))
         path.addLine(to: CGPoint(x: rect.maxX - tr, y: rect.minY))
         path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY + tr),

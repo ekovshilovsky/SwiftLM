@@ -1,103 +1,61 @@
-// ModelPickerView.swift — Model selection with download status and management
+// ModelPickerView.swift — Model selection with HuggingFace live search
 import SwiftUI
+
+// MARK: — Main Picker View
 
 struct ModelPickerView: View {
     @EnvironmentObject private var engine: InferenceEngine
     let onSelect: (String) -> Void
 
+    @State private var tab: Tab = .catalog
     @State private var device = DeviceProfile.current
     @State private var showManagement = false
-    @State private var pendingCellularModelId: String? = nil  // awaiting cellular confirm
+    @State private var pendingCellularModelId: String? = nil
 
     private var downloadManager: ModelDownloadManager { engine.downloadManager }
 
-    // iOS uses tighter RAM budget (40%) — macOS uses 75%
-    private var recommendedModels: [ModelEntry] {
-        downloadManager.modelsForDevice()
-    }
-    private var otherModels: [ModelEntry] {
-        ModelCatalog.all.filter { model in
-            !recommendedModels.contains(where: { $0.id == model.id })
-        }
+    enum Tab: String, CaseIterable {
+        case catalog = "Catalog"
+        case search  = "Search HF"
     }
 
     var body: some View {
         NavigationStack {
-            List {
-                // Device info + storage header
-                deviceHeader
-
-                // Downloaded models section (if any)
-                if !downloadManager.downloadedModels.isEmpty {
-                    Section {
-                        ForEach(downloadManager.downloadedModels) { downloaded in
-                            if let entry = ModelCatalog.all.first(where: { $0.id == downloaded.id }) {
-                                ModelRow(
-                                    model: entry,
-                                    downloadStatus: .downloaded(sizeString: downloaded.displaySize),
-                                    fitStatus: ModelCatalog.fitStatus(for: entry, on: device),
-                                    downloadProgress: downloadManager.activeDownloads[entry.id],
-                                    onTap: { handleModelTap(entry.id) },
-                                    onDelete: { try? downloadManager.delete(entry.id) }
-                                )
-                            }
-                        }
-                    } header: {
-                        HStack {
-                            Text("Downloaded")
-                            Spacer()
-                            Button("Manage") { showManagement = true }
-                                .font(.caption)
-                        }
+            VStack(spacing: 0) {
+                // ── Tab picker ─────────────────────────────────────────────
+                Picker("Tab", selection: $tab) {
+                    ForEach(Tab.allCases, id: \.self) {
+                        Text($0.rawValue).tag($0)
                     }
                 }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
 
-                // Recommended models not yet downloaded
-                let notDownloaded = recommendedModels.filter { !downloadManager.isDownloaded($0.id) }
-                if !notDownloaded.isEmpty {
-                    Section("Recommended — tap to download & load") {
-                        ForEach(notDownloaded) { model in
-                            ModelRow(
-                                model: model,
-                                downloadStatus: downloadStatus(for: model.id),
-                                fitStatus: ModelCatalog.fitStatus(for: model, on: device),
-                                downloadProgress: downloadManager.activeDownloads[model.id],
-                                onTap: { handleModelTap(model.id) },
-                                onDelete: nil
-                            )
-                        }
-                    }
-                }
-
-                // Larger models
-                let largeNotDownloaded = otherModels.filter { !downloadManager.isDownloaded($0.id) }
-                if !largeNotDownloaded.isEmpty {
-                    Section("Larger models (flash streaming)") {
-                        ForEach(largeNotDownloaded) { model in
-                            ModelRow(
-                                model: model,
-                                downloadStatus: downloadStatus(for: model.id),
-                                fitStatus: ModelCatalog.fitStatus(for: model, on: device),
-                                downloadProgress: downloadManager.activeDownloads[model.id],
-                                onTap: { handleModelTap(model.id) },
-                                onDelete: nil
-                            )
-                        }
+                // ── Content ────────────────────────────────────────────────
+                Group {
+                    if tab == .catalog {
+                        CatalogTab(
+                            downloadManager: downloadManager,
+                            device: device,
+                            onTap: handleModelTap,
+                            showManagement: $showManagement
+                        )
+                    } else {
+                        HFSearchTab(onSelect: onSelect)
                     }
                 }
             }
-            .listStyle(.inset)
             .navigationTitle("Models")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { onSelect("") }
-                }
                 ToolbarItem(placement: .primaryAction) {
-                    Button { showManagement = true } label: {
-                        Image(systemName: "externaldrive")
+                    Button {
+                        showManagement = true
+                    } label: {
+                        Label("Manage", systemImage: "externaldrive.badge.minus")
                     }
                 }
             }
@@ -105,116 +63,344 @@ struct ModelPickerView: View {
                 ModelManagementView()
                     .environmentObject(engine)
             }
-            // Cellular download warning
-            .confirmationDialog(
-                "Download on Cellular?",
-                isPresented: .init(
+            .alert(
+                "Use Cellular Data?",
+                isPresented: Binding(
                     get: { pendingCellularModelId != nil },
                     set: { if !$0 { pendingCellularModelId = nil } }
-                ),
-                titleVisibility: .visible
+                )
             ) {
-                if let modelId = pendingCellularModelId {
-                    let name = ModelCatalog.all.first(where: { $0.id == modelId })?.displayName ?? modelId
-                    let size = ModelCatalog.all.first(where: { $0.id == modelId }).map {
-                        String(format: "~%.1f GB", $0.ramRequiredGB)
-                    } ?? ""
-                    Button("Download \(size) on Cellular", role: .destructive) {
-                        let id = modelId
-                        pendingCellularModelId = nil
-                        onSelect(id)
-                    }
-                    Button("Cancel", role: .cancel) { pendingCellularModelId = nil }
+                Button("Download") {
+                    if let id = pendingCellularModelId { onSelect(id) }
+                    pendingCellularModelId = nil
                 }
+                Button("Cancel", role: .cancel) { pendingCellularModelId = nil }
             } message: {
-                Text("This model is large and may use significant cellular data.")
-            }
-            .onAppear { downloadManager.refresh() }
-        }
-        #if os(macOS)
-        .frame(minWidth: 500, minHeight: 600)
-        #endif
-    }
-
-    private var deviceHeader: some View {
-        Section {
-            // Network status banner
-            if downloadManager.isOffline {
-                Label("No internet — downloaded models only.", systemImage: "wifi.slash")
-                    .font(.caption).foregroundStyle(.orange)
-            } else if downloadManager.isOnCellular {
-                Label("Cellular connection — large downloads may incur charges.", systemImage: "antenna.radiowaves.left.and.right")
-                    .font(.caption).foregroundStyle(.orange)
-            }
-
-            // Thermal warning
-            if engine.thermalLevel.isThrottled {
-                Label(engine.thermalLevel.displayString, systemImage: "thermometer.high")
-                    .font(.caption).foregroundStyle(.red)
-            }
-
-            HStack(spacing: 16) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Label(String(format: "%.0f GB RAM", device.physicalRAMGB), systemImage: "memorychip")
-                        .font(.subheadline.weight(.medium))
-                    Text("Apple Silicon · Metal GPU")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if downloadManager.totalDiskUsageBytes > 0 {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Label(formatBytes(downloadManager.totalDiskUsageBytes), systemImage: "externaldrive.fill")
-                            .font(.subheadline.weight(.medium))
-                        Text("models on disk")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
+                Text("This model is large. Downloading over cellular may incur data charges.")
             }
         }
     }
 
     private func handleModelTap(_ modelId: String) {
-        // Don't download if offline and not already cached
         if downloadManager.isOffline && !downloadManager.isDownloaded(modelId) { return }
-        // Warn before large cellular downloads
         if downloadManager.shouldWarnForCellular(modelId: modelId) && !downloadManager.isDownloaded(modelId) {
             pendingCellularModelId = modelId
         } else {
             onSelect(modelId)
         }
     }
+}
 
-    private func downloadStatus(for modelId: String) -> ModelDownloadStatus {
-        if downloadManager.isDownloaded(modelId) {
-            let size = downloadManager.downloadedModel(for: modelId)?.displaySize ?? ""
-            return .downloaded(sizeString: size)
-        }
-        if downloadManager.activeDownloads[modelId] != nil {
-            return .downloading
-        }
-        return .notDownloaded
+// MARK: — Catalog Tab (curated list)
+
+private struct CatalogTab: View {
+    let downloadManager: ModelDownloadManager
+    let device: DeviceProfile
+    let onTap: (String) -> Void
+    @Binding var showManagement: Bool
+
+    private var recommendedModels: [ModelEntry] { downloadManager.modelsForDevice() }
+    private var otherModels: [ModelEntry] {
+        ModelCatalog.all.filter { m in !recommendedModels.contains(where: { $0.id == m.id }) }
     }
 
-    private func formatBytes(_ bytes: Int64) -> String {
-        let gb = Double(bytes) / 1_073_741_824
-        if gb >= 1.0 { return String(format: "%.1f GB", gb) }
-        return String(format: "%.0f MB", Double(bytes) / 1_048_576)
+    var body: some View {
+        List {
+            deviceHeader
+
+            if !downloadManager.downloadedModels.isEmpty {
+                Section {
+                    ForEach(downloadManager.downloadedModels) { downloaded in
+                        if let entry = ModelCatalog.all.first(where: { $0.id == downloaded.id }) {
+                            ModelRow(
+                                model: entry,
+                                downloadStatus: .downloaded(sizeString: downloaded.displaySize),
+                                fitStatus: ModelCatalog.fitStatus(for: entry, on: device),
+                                downloadProgress: downloadManager.activeDownloads[entry.id],
+                                onTap: { onTap(entry.id) },
+                                onDelete: { try? downloadManager.delete(entry.id) }
+                            )
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Downloaded")
+                        Spacer()
+                        Button("Manage") { showManagement = true }
+                            .font(.caption)
+                    }
+                }
+            }
+
+            if !recommendedModels.isEmpty {
+                Section("Recommended for your device") {
+                    ForEach(recommendedModels) { model in
+                        ModelRow(
+                            model: model,
+                            downloadStatus: downloadManager.isDownloaded(model.id) ? .downloaded(sizeString: "") : .available,
+                            fitStatus: ModelCatalog.fitStatus(for: model, on: device),
+                            downloadProgress: downloadManager.activeDownloads[model.id],
+                            onTap: { onTap(model.id) },
+                            onDelete: nil
+                        )
+                    }
+                }
+            }
+
+            if !otherModels.isEmpty {
+                Section("All Models") {
+                    ForEach(otherModels) { model in
+                        ModelRow(
+                            model: model,
+                            downloadStatus: downloadManager.isDownloaded(model.id) ? .downloaded(sizeString: "") : .available,
+                            fitStatus: ModelCatalog.fitStatus(for: model, on: device),
+                            downloadProgress: downloadManager.activeDownloads[model.id],
+                            onTap: { onTap(model.id) },
+                            onDelete: nil
+                        )
+                    }
+                }
+            }
+        }
+        .listStyle(.inset)
+    }
+
+    private var deviceHeader: some View {
+        Section {
+            HStack(spacing: 12) {
+                Image(systemName: "memorychip")
+                    .font(.title2)
+                    .foregroundStyle(.blue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Apple Silicon")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(String(format: "%.0f GB RAM", device.physicalRAMGB))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if downloadManager.isOffline {
+                    Label("Offline", systemImage: "wifi.slash")
+                        .font(.caption.bold())
+                        .foregroundStyle(.orange)
+                }
+            }
+            .padding(.vertical, 4)
+        }
     }
 }
 
-// MARK: — Download Status Enum
+// MARK: — HuggingFace Search Tab
 
-enum ModelDownloadStatus {
-    case notDownloaded
-    case downloading
+private struct HFSearchTab: View {
+    let onSelect: (String) -> Void
+
+    @StateObject private var service = HFModelSearchService.shared
+    @State private var query = ""
+    @State private var sort = HFSortOption.trending
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // ── Search bar + sort ──────────────────────────────────────────
+            VStack(spacing: 8) {
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search MLX models…", text: $query)
+                        .textFieldStyle(.plain)
+                        .autocorrectionDisabled()
+                    if !query.isEmpty {
+                        Button { query = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(10)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+
+                // Sort chips
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(HFSortOption.allCases, id: \.self) { option in
+                            Button {
+                                sort = option
+                                service.search(query: query, sort: sort)
+                            } label: {
+                                Text(option.label)
+                                    .font(.caption.weight(.medium))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(
+                                        sort == option ? Color.accentColor : Color.secondary.opacity(0.15),
+                                        in: Capsule()
+                                    )
+                                    .foregroundStyle(sort == option ? .white : .primary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 8)
+
+            Divider()
+
+            // ── Results ────────────────────────────────────────────────────
+            if service.isSearching && service.results.isEmpty {
+                Spacer()
+                ProgressView("Searching HuggingFace…")
+                    .foregroundStyle(.secondary)
+                Spacer()
+            } else if let err = service.errorMessage {
+                Spacer()
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.orange)
+                    Text(err)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+                Spacer()
+            } else if service.results.isEmpty && !query.isEmpty {
+                Spacer()
+                VStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text("No MLX models found for \"\(query)\"")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            } else {
+                List {
+                    ForEach(service.results) { model in
+                        HFModelRow(model: model, onSelect: onSelect)
+                    }
+                    if service.hasMore {
+                        HStack {
+                            Spacer()
+                            Button("Load More") { service.loadMore() }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                            Spacer()
+                        }
+                        .listRowSeparator(.hidden)
+                    }
+                }
+                .listStyle(.inset)
+                .overlay(alignment: .bottom) {
+                    if service.isSearching {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.mini)
+                            Text("Loading…").font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(6)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.bottom, 8)
+                    }
+                }
+            }
+        }
+        .onChange(of: query) { _, newValue in
+            service.search(query: newValue, sort: sort)
+        }
+        .onAppear {
+            if service.results.isEmpty {
+                service.search(query: "", sort: sort)
+            }
+        }
+    }
+}
+
+// MARK: — HF Model Row
+
+private struct HFModelRow: View {
+    let model: HFModelResult
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        Button {
+            onSelect(model.id)
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    // Model name — strip "mlx-community/" prefix for cleanliness
+                    Text(model.repoName)
+                        .font(.system(.subheadline, design: .default, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Text(model.id)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    HStack(spacing: 6) {
+                        if model.isMlxCommunity {
+                            badge("mlx-community", color: .blue)
+                        }
+                        if model.isMoE {
+                            badge("MoE", color: .purple)
+                        }
+                        if let size = model.paramSizeHint {
+                            badge(size, color: .orange)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 3) {
+                    if !model.downloadsDisplay.isEmpty {
+                        Text(model.downloadsDisplay)
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    if !model.likesDisplay.isEmpty {
+                        Text(model.likesDisplay)
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.pink)
+                    }
+                    Image(systemName: "arrow.down.circle")
+                        .font(.title3)
+                        .foregroundStyle(.blue)
+                }
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func badge(_ label: String, color: Color) -> some View {
+        Text(label)
+            .font(.system(size: 9, weight: .bold))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15), in: Capsule())
+            .foregroundStyle(color)
+    }
+}
+
+// MARK: — ModelRow (reused by catalog tab — unchanged logic, cleaner layout)
+
+enum DownloadStatus {
     case downloaded(sizeString: String)
+    case available
+    case downloading(progress: Double)
 }
-
-// MARK: — Model Row
 
 struct ModelRow: View {
     let model: ModelEntry
-    let downloadStatus: ModelDownloadStatus
+    let downloadStatus: DownloadStatus
     let fitStatus: ModelCatalog.FitStatus
     let downloadProgress: ModelDownloadProgress?
     let onTap: () -> Void
@@ -223,55 +409,65 @@ struct ModelRow: View {
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 12) {
-                modelIcon
-
-                VStack(alignment: .leading, spacing: 3) {
+                // ── Left: name + metadata ─────────────────────────────────
+                VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Text(model.displayName)
-                            .font(.headline)
+                            .font(.system(.subheadline, design: .default, weight: .semibold))
                             .foregroundStyle(.primary)
                         if let badge = model.badge {
                             Text(badge)
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
+                                .font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 5)
                                 .padding(.vertical, 2)
-                                .background(Color.accentColor.opacity(0.12))
-                                .clipShape(Capsule())
+                                .background(.blue.opacity(0.12), in: Capsule())
+                                .foregroundStyle(.blue)
                         }
                     }
 
-                    // Subtitle: size/quantization or download progress
+                    HStack(spacing: 6) {
+                        Text(model.parameterSize)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("•")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                        Text(model.quantization)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if model.isMoE {
+                            Text("MoE")
+                                .font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(.purple.opacity(0.12), in: Capsule())
+                                .foregroundStyle(.purple)
+                        }
+                    }
+
+                    // Download progress bar
                     if let progress = downloadProgress {
-                        HStack(spacing: 4) {
-                            ProgressView(value: progress.fractionCompleted)
-                                .frame(width: 80)
-                            Text("\(progress.percentString) · \(progress.speedString)")
-                                .font(.caption)
+                        ProgressView(value: progress.fractionCompleted)
+                            .tint(.blue)
+                        if let speed = progress.speedMBps {
+                            Text(String(format: "%.1f MB/s", speed))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
-                    } else {
-                        HStack(spacing: 4) {
-                            Text("\(model.parameterSize) · \(model.quantization)")
-                            Text("·")
-                            switch downloadStatus {
-                            case .downloaded(let size):
-                                Text(size).foregroundStyle(.secondary)
-                            case .notDownloaded:
-                                Text("\(model.ramRequiredGB, specifier: "%.1f")GB RAM")
-                                    .foregroundStyle(.secondary)
-                            case .downloading:
-                                Text("Downloading…").foregroundStyle(.blue)
-                            }
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     }
                 }
 
                 Spacer()
 
-                trailingBadge
+                // ── Right: status indicator ───────────────────────────────
+                VStack(alignment: .trailing, spacing: 3) {
+                    statusBadge
+                    Text(String(format: "%.0f GB", model.ramRequiredGB))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
             }
+            .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -284,63 +480,42 @@ struct ModelRow: View {
         }
     }
 
-    private var modelIcon: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(iconGradient)
-                .frame(width: 44, height: 44)
-            Image(systemName: iconName)
-                .font(.title3)
-                .foregroundStyle(.white)
-        }
-    }
-
     @ViewBuilder
-    private var trailingBadge: some View {
+    private var statusBadge: some View {
         switch downloadStatus {
         case .downloaded:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
                 .font(.title3)
-        case .downloading:
-            ProgressView()
-                .controlSize(.small)
-        case .notDownloaded:
-            HStack(spacing: 2) {
-                switch fitStatus {
-                case .fits:
-                    Image(systemName: "icloud.and.arrow.down")
-                        .foregroundStyle(.blue)
-                case .tight:
-                    Image(systemName: "icloud.and.arrow.down")
-                        .foregroundStyle(.orange)
-                case .requiresFlash:
-                    Label("Flash", systemImage: "bolt.fill")
-                        .font(.caption).foregroundStyle(.purple)
-                case .tooLarge:
-                    Image(systemName: "exclamationmark.circle")
-                        .foregroundStyle(.red)
-                }
+        case .available:
+            switch fitStatus {
+            case .fits:
+                Image(systemName: "arrow.down.circle")
+                    .foregroundStyle(.blue)
+                    .font(.title3)
+            case .tight:
+                Image(systemName: "arrow.down.circle")
+                    .foregroundStyle(.orange)
+                    .font(.title3)
+            case .requiresFlash:
+                Image(systemName: "externaldrive.badge.wifi")
+                    .foregroundStyle(.indigo)
+                    .font(.title3)
+            case .tooLarge:
+                Image(systemName: "xmark.circle")
+                    .foregroundStyle(.red)
+                    .font(.title3)
             }
-        }
-    }
-
-    private var iconGradient: LinearGradient {
-        switch fitStatus {
-        case .fits:    return LinearGradient(colors: [.blue, .cyan],     startPoint: .topLeading, endPoint: .bottomTrailing)
-        case .tight:   return LinearGradient(colors: [.orange, .yellow], startPoint: .topLeading, endPoint: .bottomTrailing)
-        case .requiresFlash: return LinearGradient(colors: [.purple, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
-        case .tooLarge: return LinearGradient(colors: [.gray, .gray],   startPoint: .topLeading, endPoint: .bottomTrailing)
-        }
-    }
-
-    private var iconName: String {
-        if model.isMoE { return "square.grid.3x3.fill" }
-        switch model.parameterSize {
-        case let s where s.contains("0.5"): return "hare.fill"
-        case let s where s.contains("3"):   return "bolt.fill"
-        case let s where s.contains("7"):   return "brain"
-        default: return "sparkles"
+        case .downloading(let p):
+            ZStack {
+                Circle()
+                    .stroke(Color.secondary.opacity(0.2), lineWidth: 2)
+                Circle()
+                    .trim(from: 0, to: p)
+                    .stroke(Color.blue, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 22, height: 22)
         }
     }
 }
