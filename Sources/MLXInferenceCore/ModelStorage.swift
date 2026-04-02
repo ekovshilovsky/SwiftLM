@@ -1,6 +1,6 @@
 // ModelStorage.swift — Platform-aware model storage resolution
 // macOS: ~/Library/Caches/huggingface/hub/  (same as defaultHubApi)
-// iOS:   ~/Library/Application Support/SwiftLMChat/Models/ (persistent, excluded from iCloud)
+// iOS:   ~/Library/Application Support/SwiftBuddy/Models/ (persistent, excluded from iCloud)
 
 import Foundation
 
@@ -28,7 +28,7 @@ public enum ModelStorage {
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first!
-            .appendingPathComponent("SwiftLMChat/Models", isDirectory: true)
+            .appendingPathComponent("SwiftBuddy/Models", isDirectory: true)
         ensureDirectory(base)
         return base
     }

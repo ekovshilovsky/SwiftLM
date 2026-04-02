@@ -1,4 +1,4 @@
-// SwiftLMChatApp.swift — App entry point (iOS + macOS)
+// SwiftBuddyApp.swift — App entry point (iOS + macOS)
 import SwiftUI
 
 // MARK: — Appearance Store (persists dark/light/system preference)
@@ -26,7 +26,7 @@ final class AppearanceStore: ObservableObject {
 // MARK: — App
 
 @main
-struct SwiftLMChatApp: App {
+struct SwiftBuddyApp: App {
     @StateObject private var engine = InferenceEngine()
     @StateObject private var appearance = AppearanceStore()
 
@@ -36,8 +36,8 @@ struct SwiftLMChatApp: App {
                 .environmentObject(engine)
                 .environmentObject(appearance)
                 .preferredColorScheme(appearance.colorScheme)
-                .accentColor(SwiftLMTheme.accent)
-                .tint(SwiftLMTheme.accent)
+                .accentColor(SwiftBuddyTheme.accent)
+                .tint(SwiftBuddyTheme.accent)
         }
         #if os(macOS)
         .commands {

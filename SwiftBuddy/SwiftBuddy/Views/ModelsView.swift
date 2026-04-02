@@ -14,7 +14,7 @@ struct ModelsView: View {
 
     var body: some View {
         ZStack {
-            SwiftLMTheme.background.ignoresSafeArea()
+            SwiftBuddyTheme.background.ignoresSafeArea()
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -57,15 +57,15 @@ struct ModelsView: View {
                                 .padding(.horizontal)
                                 if downloaded.id != dm.downloadedModels.last?.id {
                                     Divider()
-                                        .background(SwiftLMTheme.divider)
+                                        .background(SwiftBuddyTheme.divider)
                                         .padding(.leading, 72)
                                 }
                             }
                         }
-                        .background(SwiftLMTheme.surface.opacity(0.60))
-                        .clipShape(RoundedRectangle(cornerRadius: SwiftLMTheme.radiusMedium))
+                        .background(SwiftBuddyTheme.surface.opacity(0.60))
+                        .clipShape(RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium))
                         .overlay(
-                            RoundedRectangle(cornerRadius: SwiftLMTheme.radiusMedium)
+                            RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium)
                                 .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
                         )
                         .padding(.horizontal)
@@ -111,15 +111,15 @@ struct ModelsView: View {
                                 .padding(.horizontal)
                                 if model.id != others.last?.id {
                                     Divider()
-                                        .background(SwiftLMTheme.divider)
+                                        .background(SwiftBuddyTheme.divider)
                                         .padding(.leading, 56)
                                 }
                             }
                         }
-                        .background(SwiftLMTheme.surface.opacity(0.60))
-                        .clipShape(RoundedRectangle(cornerRadius: SwiftLMTheme.radiusMedium))
+                        .background(SwiftBuddyTheme.surface.opacity(0.60))
+                        .clipShape(RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium))
                         .overlay(
-                            RoundedRectangle(cornerRadius: SwiftLMTheme.radiusMedium)
+                            RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium)
                                 .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
                         )
                         .padding(.horizontal)
@@ -130,19 +130,19 @@ struct ModelsView: View {
                     Button { showHFSearch = true } label: {
                         HStack {
                             Image(systemName: "magnifyingglass")
-                                .foregroundStyle(SwiftLMTheme.accent)
+                                .foregroundStyle(SwiftBuddyTheme.accent)
                             Text("Search HuggingFace MLX models")
-                                .foregroundStyle(SwiftLMTheme.textPrimary)
+                                .foregroundStyle(SwiftBuddyTheme.textPrimary)
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.caption)
-                                .foregroundStyle(SwiftLMTheme.textTertiary)
+                                .foregroundStyle(SwiftBuddyTheme.textTertiary)
                         }
                         .padding(14)
-                        .background(SwiftLMTheme.surface.opacity(0.60))
-                        .clipShape(RoundedRectangle(cornerRadius: SwiftLMTheme.radiusMedium))
+                        .background(SwiftBuddyTheme.surface.opacity(0.60))
+                        .clipShape(RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium))
                         .overlay(
-                            RoundedRectangle(cornerRadius: SwiftLMTheme.radiusMedium)
+                            RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium)
                                 .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
                         )
                     }
@@ -157,14 +157,14 @@ struct ModelsView: View {
         .navigationTitle("Models")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
-        .toolbarBackground(SwiftLMTheme.background.opacity(0.90), for: .navigationBar)
+        .toolbarBackground(SwiftBuddyTheme.background.opacity(0.90), for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         #endif
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { showManagement = true } label: {
                     Image(systemName: "externaldrive.badge.minus")
-                        .foregroundStyle(SwiftLMTheme.accent)
+                        .foregroundStyle(SwiftBuddyTheme.accent)
                 }
             }
         }
@@ -184,10 +184,10 @@ struct ModelsView: View {
         HStack(spacing: 8) {
             Text(title)
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(SwiftLMTheme.textTertiary)
+                .foregroundStyle(SwiftBuddyTheme.textTertiary)
                 .textCase(.uppercase)
             Rectangle()
-                .fill(SwiftLMTheme.divider)
+                .fill(SwiftBuddyTheme.divider)
                 .frame(height: 1)
         }
         .padding(.horizontal)
@@ -238,50 +238,50 @@ private struct ActiveModelCardView: View {
 
     private var loadingCard: some View {
         HStack(spacing: 12) {
-            ProgressView().controlSize(.regular).tint(SwiftLMTheme.accent)
+            ProgressView().controlSize(.regular).tint(SwiftBuddyTheme.accent)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Loading model…")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 Text("Initializing Metal GPU")
                     .font(.caption)
-                    .foregroundStyle(SwiftLMTheme.textSecondary)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
             }
             Spacer()
         }
         .padding()
-        .glassCard(cornerRadius: SwiftLMTheme.radiusLarge)
+        .glassCard(cornerRadius: SwiftBuddyTheme.radiusLarge)
     }
 
     private func downloadingCard(progress: Double, speed: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Image(systemName: "arrow.down.circle.fill")
-                    .foregroundStyle(SwiftLMTheme.accent)
+                    .foregroundStyle(SwiftBuddyTheme.accent)
                 Text("Downloading model…")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 Spacer()
                 Text("\(Int(progress * 100))%")
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(SwiftLMTheme.textSecondary)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
             }
-            ProgressView(value: progress).tint(SwiftLMTheme.accent)
+            ProgressView(value: progress).tint(SwiftBuddyTheme.accent)
             Text(speed)
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(SwiftLMTheme.textSecondary)
+                .foregroundStyle(SwiftBuddyTheme.textSecondary)
         }
         .padding()
-        .glassCard(cornerRadius: SwiftLMTheme.radiusLarge)
+        .glassCard(cornerRadius: SwiftBuddyTheme.radiusLarge)
     }
 
     private var idleCard: some View {
         HStack(spacing: 12) {
             ZStack {
                 Circle()
-                    .fill(SwiftLMTheme.heroGradient)
+                    .fill(SwiftBuddyTheme.heroGradient)
                     .frame(width: 46, height: 46)
-                    .shadow(color: SwiftLMTheme.accent.opacity(0.30), radius: 8)
+                    .shadow(color: SwiftBuddyTheme.accent.opacity(0.30), radius: 8)
                 Image(systemName: "bolt.fill")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(.white)
@@ -289,15 +289,15 @@ private struct ActiveModelCardView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("No model loaded")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 Text("Select a model below to start chatting")
                     .font(.caption)
-                    .foregroundStyle(SwiftLMTheme.textSecondary)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
             }
             Spacer()
         }
         .padding()
-        .glassCard(cornerRadius: SwiftLMTheme.radiusLarge)
+        .glassCard(cornerRadius: SwiftBuddyTheme.radiusLarge)
     }
 }
 
@@ -309,21 +309,21 @@ private struct ActiveModelHeroCard: View {
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             // Dark mesh gradient background
-            RoundedRectangle(cornerRadius: SwiftLMTheme.radiusLarge)
-                .fill(SwiftLMTheme.heroGradient)
+            RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusLarge)
+                .fill(SwiftBuddyTheme.heroGradient)
 
             // Glow orb
             Circle()
-                .fill(SwiftLMTheme.accent.opacity(0.18))
+                .fill(SwiftBuddyTheme.accent.opacity(0.18))
                 .frame(width: 120, height: 120)
                 .blur(radius: 30)
                 .offset(x: 60, y: -20)
 
             // Border
-            RoundedRectangle(cornerRadius: SwiftLMTheme.radiusLarge)
+            RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusLarge)
                 .strokeBorder(
                     LinearGradient(
-                        colors: [SwiftLMTheme.accent.opacity(0.40), Color.white.opacity(0.05)],
+                        colors: [SwiftBuddyTheme.accent.opacity(0.40), Color.white.opacity(0.05)],
                         startPoint: .topLeading, endPoint: .bottomTrailing
                     ),
                     lineWidth: 1
@@ -359,10 +359,10 @@ private struct ActiveModelHeroCard: View {
         .frame(maxWidth: .infinity)
         .frame(height: 140)
         .shadow(
-            color: SwiftLMTheme.shadowCard.color,
-            radius: SwiftLMTheme.shadowCard.radius,
-            x: SwiftLMTheme.shadowCard.x,
-            y: SwiftLMTheme.shadowCard.y
+            color: SwiftBuddyTheme.shadowCard.color,
+            radius: SwiftBuddyTheme.shadowCard.radius,
+            x: SwiftBuddyTheme.shadowCard.x,
+            y: SwiftBuddyTheme.shadowCard.y
         )
     }
 
@@ -379,7 +379,7 @@ private struct ActiveModelHeroCard: View {
     private var stateBadge: some View {
         switch state {
         case .ready:
-            badgeView("Ready", icon: "checkmark.circle.fill", color: SwiftLMTheme.success)
+            badgeView("Ready", icon: "checkmark.circle.fill", color: SwiftBuddyTheme.success)
         case .generating:
             HStack(spacing: 4) {
                 GeneratingDots()
@@ -416,10 +416,10 @@ private struct DownloadProgressCard: View {
             HStack(spacing: 10) {
                 ZStack {
                     Circle()
-                        .stroke(SwiftLMTheme.accent.opacity(0.15), lineWidth: 3)
+                        .stroke(SwiftBuddyTheme.accent.opacity(0.15), lineWidth: 3)
                     Circle()
                         .trim(from: 0, to: progress.fractionCompleted)
-                        .stroke(SwiftLMTheme.avatarGradient,
+                        .stroke(SwiftBuddyTheme.avatarGradient,
                                 style: StrokeStyle(lineWidth: 3, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                         .animation(.linear(duration: 0.3), value: progress.fractionCompleted)
@@ -429,28 +429,28 @@ private struct DownloadProgressCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(modelId.components(separatedBy: "/").last ?? modelId)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(SwiftLMTheme.textPrimary)
+                        .foregroundStyle(SwiftBuddyTheme.textPrimary)
                         .lineLimit(1)
                     HStack(spacing: 6) {
                         Text("\(Int(progress.fractionCompleted * 100))%")
                             .font(.caption.monospacedDigit())
-                            .foregroundStyle(SwiftLMTheme.accent)
+                            .foregroundStyle(SwiftBuddyTheme.accent)
                         if let speed = progress.speedMBps {
                             Text("·")
-                                .foregroundStyle(SwiftLMTheme.textTertiary).font(.caption)
+                                .foregroundStyle(SwiftBuddyTheme.textTertiary).font(.caption)
                             Text(String(format: "%.1f MB/s", speed))
                                 .font(.caption.monospacedDigit())
-                                .foregroundStyle(SwiftLMTheme.textSecondary)
+                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
                         }
                     }
                 }
                 Spacer()
             }
             ProgressView(value: progress.fractionCompleted)
-                .tint(SwiftLMTheme.accent)
+                .tint(SwiftBuddyTheme.accent)
         }
         .padding(14)
-        .glassCard(cornerRadius: SwiftLMTheme.radiusMedium)
+        .glassCard(cornerRadius: SwiftBuddyTheme.radiusMedium)
     }
 }
 
@@ -470,32 +470,32 @@ private struct DownloadedModelRow: View {
             HStack(spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(isActive ? AnyShapeStyle(SwiftLMTheme.userBubbleGradient) : AnyShapeStyle(SwiftLMTheme.surface))
+                        .fill(isActive ? AnyShapeStyle(SwiftBuddyTheme.userBubbleGradient) : AnyShapeStyle(SwiftBuddyTheme.surface))
                         .frame(width: 44, height: 44)
                     Image(systemName: entry?.isMoE == true ? "square.grid.3x3.fill" : "brain")
                         .font(.body)
-                        .foregroundStyle(isActive ? .white : SwiftLMTheme.textSecondary)
+                        .foregroundStyle(isActive ? .white : SwiftBuddyTheme.textSecondary)
                 }
-                .shadow(color: isActive ? SwiftLMTheme.accent.opacity(0.30) : .clear, radius: 6)
+                .shadow(color: isActive ? SwiftBuddyTheme.accent.opacity(0.30) : .clear, radius: 6)
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(entry?.displayName ?? downloaded.id.components(separatedBy: "/").last ?? downloaded.id)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(SwiftLMTheme.textPrimary)
+                            .foregroundStyle(SwiftBuddyTheme.textPrimary)
                         if isActive {
-                            ThemedBadge(text: "IN USE", color: SwiftLMTheme.accent)
+                            ThemedBadge(text: "IN USE", color: SwiftBuddyTheme.accent)
                         }
                     }
                     HStack(spacing: 6) {
                         Text(downloaded.displaySize)
                             .font(.caption)
-                            .foregroundStyle(SwiftLMTheme.textSecondary)
+                            .foregroundStyle(SwiftBuddyTheme.textSecondary)
                         if let entry {
-                            Text("·").foregroundStyle(SwiftLMTheme.textTertiary).font(.caption)
+                            Text("·").foregroundStyle(SwiftBuddyTheme.textTertiary).font(.caption)
                             Text(entry.quantization)
                                 .font(.caption)
-                                .foregroundStyle(SwiftLMTheme.textSecondary)
+                                .foregroundStyle(SwiftBuddyTheme.textSecondary)
                         }
                     }
                 }
@@ -503,7 +503,7 @@ private struct DownloadedModelRow: View {
                 Spacer()
 
                 Image(systemName: isActive ? "checkmark.circle.fill" : "arrow.right.circle")
-                    .foregroundStyle(isActive ? SwiftLMTheme.accent : SwiftLMTheme.textTertiary)
+                    .foregroundStyle(isActive ? SwiftBuddyTheme.accent : SwiftBuddyTheme.textTertiary)
                     .font(.title3)
             }
             .padding(.vertical, 12)
@@ -529,7 +529,7 @@ private struct CatalogCard: View {
 
     var body: some View {
         Button {
-            withAnimation(SwiftLMTheme.quickSpring) { tapped = true }
+            withAnimation(SwiftBuddyTheme.quickSpring) { tapped = true }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 tapped = false
                 onTap()
@@ -546,13 +546,13 @@ private struct CatalogCard: View {
                 Spacer()
                 Text(model.displayName)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
 
                 Text(String(format: "~%.0f GB RAM", model.ramRequiredGB))
                     .font(.caption)
-                    .foregroundStyle(SwiftLMTheme.textSecondary)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
 
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.down.circle")
@@ -565,10 +565,10 @@ private struct CatalogCard: View {
             }
             .padding(14)
             .frame(width: 150, height: 165)
-            .background(SwiftLMTheme.surface.opacity(0.70))
-            .clipShape(RoundedRectangle(cornerRadius: SwiftLMTheme.radiusMedium))
+            .background(SwiftBuddyTheme.surface.opacity(0.70))
+            .clipShape(RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium))
             .overlay(
-                RoundedRectangle(cornerRadius: SwiftLMTheme.radiusMedium)
+                RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium)
                     .strokeBorder(fitColor.opacity(tapped ? 0.60 : 0.18), lineWidth: 1)
             )
             .scaleEffect(tapped ? 0.96 : 1.0)
@@ -579,10 +579,10 @@ private struct CatalogCard: View {
 
     private var fitColor: Color {
         switch fitStatus {
-        case .fits:          return SwiftLMTheme.accent
-        case .tight:         return SwiftLMTheme.warning
+        case .fits:          return SwiftBuddyTheme.accent
+        case .tight:         return SwiftBuddyTheme.warning
         case .requiresFlash: return Color.indigo
-        case .tooLarge:      return SwiftLMTheme.error
+        case .tooLarge:      return SwiftBuddyTheme.error
         }
     }
 
@@ -590,13 +590,13 @@ private struct CatalogCard: View {
     private var fitBadgeIcon: some View {
         switch fitStatus {
         case .fits:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(SwiftLMTheme.success).font(.caption)
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(SwiftBuddyTheme.success).font(.caption)
         case .tight:
-            Image(systemName: "exclamationmark.circle").foregroundStyle(SwiftLMTheme.warning).font(.caption)
+            Image(systemName: "exclamationmark.circle").foregroundStyle(SwiftBuddyTheme.warning).font(.caption)
         case .requiresFlash:
             Image(systemName: "externaldrive.badge.wifi").foregroundStyle(Color.indigo).font(.caption)
         case .tooLarge:
-            Image(systemName: "xmark.circle").foregroundStyle(SwiftLMTheme.error).font(.caption)
+            Image(systemName: "xmark.circle").foregroundStyle(SwiftBuddyTheme.error).font(.caption)
         }
     }
 }
@@ -624,14 +624,14 @@ private struct CatalogListRow: View {
                     HStack(spacing: 6) {
                         Text(model.displayName)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(SwiftLMTheme.textPrimary)
+                            .foregroundStyle(SwiftBuddyTheme.textPrimary)
                         if let badge = model.badge {
-                            ThemedBadge(text: badge, color: SwiftLMTheme.accent)
+                            ThemedBadge(text: badge, color: SwiftBuddyTheme.accent)
                         }
                     }
                     Text("\(model.parameterSize) · \(model.quantization) · ~\(String(format: "%.0f GB", model.ramRequiredGB)) RAM")
                         .font(.caption)
-                        .foregroundStyle(SwiftLMTheme.textSecondary)
+                        .foregroundStyle(SwiftBuddyTheme.textSecondary)
                 }
 
                 Spacer()
@@ -646,10 +646,10 @@ private struct CatalogListRow: View {
 
     private var fitColor: Color {
         switch fitStatus {
-        case .fits:          return SwiftLMTheme.accent
-        case .tight:         return SwiftLMTheme.warning
+        case .fits:          return SwiftBuddyTheme.accent
+        case .tight:         return SwiftBuddyTheme.warning
         case .requiresFlash: return Color.indigo
-        case .tooLarge:      return SwiftLMTheme.error
+        case .tooLarge:      return SwiftBuddyTheme.error
         }
     }
 
@@ -658,16 +658,16 @@ private struct CatalogListRow: View {
         switch fitStatus {
         case .fits:
             Image(systemName: "arrow.down.circle")
-                .foregroundStyle(SwiftLMTheme.accent).font(.title3)
+                .foregroundStyle(SwiftBuddyTheme.accent).font(.title3)
         case .tight:
             Image(systemName: "arrow.down.circle")
-                .foregroundStyle(SwiftLMTheme.warning).font(.title3)
+                .foregroundStyle(SwiftBuddyTheme.warning).font(.title3)
         case .requiresFlash:
             Image(systemName: "externaldrive.badge.wifi")
                 .foregroundStyle(Color.indigo).font(.title3)
         case .tooLarge:
             Image(systemName: "xmark.circle")
-                .foregroundStyle(SwiftLMTheme.error).font(.title3)
+                .foregroundStyle(SwiftBuddyTheme.error).font(.title3)
         }
     }
 }
@@ -682,7 +682,7 @@ private struct HFSearchSheet: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                SwiftLMTheme.background.ignoresSafeArea()
+                SwiftBuddyTheme.background.ignoresSafeArea()
                 HFSearchTab(onSelect: { id in
                     onSelect(id)
                     dismiss()
@@ -695,7 +695,7 @@ private struct HFSearchSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .foregroundStyle(SwiftLMTheme.accent)
+                        .foregroundStyle(SwiftBuddyTheme.accent)
                 }
             }
         }

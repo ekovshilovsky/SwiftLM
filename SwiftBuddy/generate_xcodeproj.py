@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-generate_xcodeproj.py — Generates SwiftLMChat.xcodeproj without xcodegen.
+generate_xcodeproj.py — Generates SwiftBuddy.xcodeproj without xcodegen.
 Includes MLXInferenceCore sources directly + local SPM packages (mlx-swift, mlx-swift-lm).
-Run from the SwiftLMChat/ directory:
+Run from the SwiftBuddy/ directory:
     python3 generate_xcodeproj.py
 """
 
@@ -49,21 +49,21 @@ BF_MLXLMC_FWK = uid()
 ASSETS_REF    = uid()
 ASSETS_BF     = uid()
 
-# ── App source files (relative to SwiftLMChat/)
+# ── App source files (relative to SwiftBuddy/)
 app_sources = [
-    ("SwiftLMChat/SwiftLMChatApp.swift",          uid(), uid()),
-    ("SwiftLMChat/Theme.swift",                   uid(), uid()),
-    ("SwiftLMChat/Views/RootView.swift",           uid(), uid()),
-    ("SwiftLMChat/Views/ChatView.swift",           uid(), uid()),
-    ("SwiftLMChat/Views/MessageBubble.swift",      uid(), uid()),
-    ("SwiftLMChat/Views/ModelsView.swift",         uid(), uid()),
-    ("SwiftLMChat/Views/ModelPickerView.swift",    uid(), uid()),
-    ("SwiftLMChat/Views/ModelManagementView.swift",uid(), uid()),
-    ("SwiftLMChat/Views/SettingsView.swift",       uid(), uid()),
-    ("SwiftLMChat/ViewModels/ChatViewModel.swift", uid(), uid()),
+    ("SwiftBuddy/SwiftBuddyApp.swift",          uid(), uid()),
+    ("SwiftBuddy/Theme.swift",                   uid(), uid()),
+    ("SwiftBuddy/Views/RootView.swift",           uid(), uid()),
+    ("SwiftBuddy/Views/ChatView.swift",           uid(), uid()),
+    ("SwiftBuddy/Views/MessageBubble.swift",      uid(), uid()),
+    ("SwiftBuddy/Views/ModelsView.swift",         uid(), uid()),
+    ("SwiftBuddy/Views/ModelPickerView.swift",    uid(), uid()),
+    ("SwiftBuddy/Views/ModelManagementView.swift",uid(), uid()),
+    ("SwiftBuddy/Views/SettingsView.swift",       uid(), uid()),
+    ("SwiftBuddy/ViewModels/ChatViewModel.swift", uid(), uid()),
 ]
 
-# ── MLXInferenceCore sources (path relative to SwiftLMChat/)
+# ── MLXInferenceCore sources (path relative to SwiftBuddy/)
 core_sources = [
     ("../Sources/MLXInferenceCore/ChatMessage.swift",          uid(), uid()),
     ("../Sources/MLXInferenceCore/GenerationConfig.swift",     uid(), uid()),
@@ -92,14 +92,14 @@ def pbxproj():
     file_refs = ""
     for path, fref, _ in app_sources:
         name = Path(path).name
-        # SOURCE_ROOT = project root (SwiftLMChat/) so the path is exact, no doubling
+        # SOURCE_ROOT = project root (SwiftBuddy/) so the path is exact, no doubling
         file_refs += f'\t\t{fref} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "{name}"; path = "{path}"; sourceTree = "SOURCE_ROOT"; }};\n'
     for path, fref, _ in core_sources:
         name = Path(path).name
         # <group> is fine here — these paths start with ../Sources which go up from project dir
         file_refs += f'\t\t{fref} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "{name}"; path = "{path}"; sourceTree = "<group>"; }};\n'
-    file_refs += f'\t\t{ASSETS_REF} /* Assets.xcassets */ = {{isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = SwiftLMChat/Assets.xcassets; sourceTree = "SOURCE_ROOT"; }};\n'
-    file_refs += f'\t\t{APP_PRODUCT} /* SwiftLMChat.app */ = {{isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SwiftLMChat.app; sourceTree = BUILT_PRODUCTS_DIR; }};\n'
+    file_refs += f'\t\t{ASSETS_REF} /* Assets.xcassets */ = {{isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = SwiftBuddy/Assets.xcassets; sourceTree = "SOURCE_ROOT"; }};\n'
+    file_refs += f'\t\t{APP_PRODUCT} /* SwiftBuddy.app */ = {{isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SwiftBuddy.app; sourceTree = BUILT_PRODUCTS_DIR; }};\n'
 
     # Group children
     app_root_children = "\n".join(
@@ -157,7 +157,7 @@ def pbxproj():
 \t\t\tisa = PBXGroup;
 \t\t\tchildren = (
 \t\t\t\t{CORE_GRP} /* MLXInferenceCore */,
-\t\t\t\t{SOURCES_GRP} /* SwiftLMChat */,
+\t\t\t\t{SOURCES_GRP} /* SwiftBuddy */,
 \t\t\t\t{PRODUCTS_GRP} /* Products */,
 \t\t\t);
 \t\t\tsourceTree = "<group>";
@@ -165,7 +165,7 @@ def pbxproj():
 \t\t{PRODUCTS_GRP} /* Products */ = {{
 \t\t\tisa = PBXGroup;
 \t\t\tchildren = (
-\t\t\t\t{APP_PRODUCT} /* SwiftLMChat.app */,
+\t\t\t\t{APP_PRODUCT} /* SwiftBuddy.app */,
 \t\t\t);
 \t\t\tname = Products;
 \t\t\tsourceTree = "<group>";
@@ -178,7 +178,7 @@ def pbxproj():
 \t\t\tname = MLXInferenceCore;
 \t\t\tsourceTree = "<group>";
 \t\t}};
-\t\t{SOURCES_GRP} /* SwiftLMChat */ = {{
+\t\t{SOURCES_GRP} /* SwiftBuddy */ = {{
 \t\t\tisa = PBXGroup;
 \t\t\tchildren = (
 {app_root_children}
@@ -186,7 +186,7 @@ def pbxproj():
 \t\t\t\t{VIEWMODELS_GRP} /* ViewModels */,
 \t\t\t\t{ASSETS_REF} /* Assets.xcassets */,
 \t\t\t);
-\t\t\tpath = SwiftLMChat;
+\t\t\tpath = SwiftBuddy;
 \t\t\tsourceTree = "<group>";
 \t\t}};
 \t\t{VIEWS_GRP} /* Views */ = {{
@@ -208,7 +208,7 @@ def pbxproj():
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-\t\t{APP_TARGET} /* SwiftLMChat */ = {{
+\t\t{APP_TARGET} /* SwiftBuddy */ = {{
 \t\t\tisa = PBXNativeTarget;
 \t\t\tbuildConfigurationList = {TGT_CFGLIST};
 \t\t\tbuildPhases = (
@@ -218,13 +218,13 @@ def pbxproj():
 \t\t\t);
 \t\t\tbuildRules = ();
 \t\t\tdependencies = ();
-\t\t\tname = SwiftLMChat;
+\t\t\tname = SwiftBuddy;
 \t\t\tpackageProductDependencies = (
 \t\t\t\t{PROD_MLX} /* MLX */,
 \t\t\t\t{PROD_MLXLLM} /* MLXLLM */,
 \t\t\t\t{PROD_MLXLMC} /* MLXLMCommon */,
 \t\t\t);
-\t\t\tproductName = SwiftLMChat;
+\t\t\tproductName = SwiftBuddy;
 \t\t\tproductReference = {APP_PRODUCT};
 \t\t\tproductType = "com.apple.product-type.application";
 \t\t}};
@@ -315,7 +315,7 @@ def pbxproj():
 \t\t\t\tCODE_SIGN_STYLE = Automatic;
 \t\t\t\tCURRENT_PROJECT_VERSION = 1;
 \t\t\t\tGENERATE_INFOPLIST_FILE = YES;
-\t\t\t\tINFOPLIST_KEY_CFBundleDisplayName = "SwiftLM Chat";
+\t\t\t\tINFOPLIST_KEY_CFBundleDisplayName = "SwiftBuddy Chat";
 \t\t\t\tINFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 SharpAI";
 \t\t\t\tINFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 \t\t\t\tINFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -325,7 +325,7 @@ def pbxproj():
 \t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = 17.0;
 \t\t\t\tMACOS_DEPLOYMENT_TARGET = 14.0;
 \t\t\t\tMARKETING_VERSION = 1.0;
-\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.sharpai.SwiftLMChat;
+\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.sharpai.SwiftBuddy;
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
 \t\t\t\tSDKROOT = auto;
 \t\t\t\tSUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -343,11 +343,11 @@ def pbxproj():
 \t\t\t\tCODE_SIGN_STYLE = Automatic;
 \t\t\t\tCURRENT_PROJECT_VERSION = 1;
 \t\t\t\tGENERATE_INFOPLIST_FILE = YES;
-\t\t\t\tINFOPLIST_KEY_CFBundleDisplayName = "SwiftLM Chat";
+\t\t\t\tINFOPLIST_KEY_CFBundleDisplayName = "SwiftBuddy Chat";
 \t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = 17.0;
 \t\t\t\tMACOS_DEPLOYMENT_TARGET = 14.0;
 \t\t\t\tMARKETING_VERSION = 1.0;
-\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.sharpai.SwiftLMChat;
+\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = com.sharpai.SwiftBuddy;
 \t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
 \t\t\t\tSDKROOT = auto;
 \t\t\t\tSUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -409,7 +409,7 @@ def pbxproj():
 """
 
 def main():
-    proj_dir = Path("SwiftLMChat.xcodeproj")
+    proj_dir = Path("SwiftBuddy.xcodeproj")
     proj_dir.mkdir(exist_ok=True)
 
     ws_dir = proj_dir / "project.xcworkspace"
@@ -423,7 +423,7 @@ def main():
 
     pbx = proj_dir / "project.pbxproj"
     pbx.write_text(pbxproj())
-    print("✅  SwiftLMChat.xcodeproj/project.pbxproj generated")
+    print("✅  SwiftBuddy.xcodeproj/project.pbxproj generated")
     print("✅  Workspace data written")
     print()
     print("📦  Local packages wired:")
@@ -436,7 +436,7 @@ def main():
                     ("InferenceEngine", None, None)]:
         print(f"    • {p}.swift")
     print()
-    print("🎉  Open SwiftLMChat.xcodeproj in Xcode — no manual package setup needed.")
+    print("🎉  Open SwiftBuddy.xcodeproj in Xcode — no manual package setup needed.")
 
 if __name__ == "__main__":
     main()

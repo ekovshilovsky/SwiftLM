@@ -33,12 +33,12 @@ struct MessageBubble: View {
                 if showTimestamp {
                     Text(message.timestamp, style: .time)
                         .font(.caption2)
-                        .foregroundStyle(SwiftLMTheme.textTertiary)
+                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
             .onTapGesture {
-                withAnimation(SwiftLMTheme.quickSpring) {
+                withAnimation(SwiftBuddyTheme.quickSpring) {
                     showTimestamp.toggle()
                 }
             }
@@ -56,10 +56,10 @@ struct MessageBubble: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(SwiftLMTheme.userBubbleGradient)
+            .background(SwiftBuddyTheme.userBubbleGradient)
             .clipShape(UserBubbleShape())
             .shadow(
-                color: SwiftLMTheme.accent.opacity(0.30),
+                color: SwiftBuddyTheme.accent.opacity(0.30),
                 radius: 6, x: 0, y: 3
             )
     }
@@ -70,21 +70,21 @@ struct MessageBubble: View {
         Text(message.content)
             .font(.system(.body, design: .default))
             .textSelection(.enabled)
-            .foregroundStyle(SwiftLMTheme.textPrimary)
+            .foregroundStyle(SwiftBuddyTheme.textPrimary)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(.ultraThinMaterial)
-            .background(SwiftLMTheme.surface.opacity(0.80))
+            .background(SwiftBuddyTheme.surface.opacity(0.80))
             .clipShape(AssistantBubbleShape())
             .overlay(
                 AssistantBubbleShape()
                     .stroke(Color.white.opacity(0.08), lineWidth: 1)
             )
             .shadow(
-                color: SwiftLMTheme.shadowBubble.color,
-                radius: SwiftLMTheme.shadowBubble.radius,
-                x: SwiftLMTheme.shadowBubble.x,
-                y: SwiftLMTheme.shadowBubble.y
+                color: SwiftBuddyTheme.shadowBubble.color,
+                radius: SwiftBuddyTheme.shadowBubble.radius,
+                x: SwiftBuddyTheme.shadowBubble.x,
+                y: SwiftBuddyTheme.shadowBubble.y
             )
     }
 }
@@ -128,24 +128,24 @@ struct StreamingBubble: View {
         HStack(alignment: .bottom, spacing: 0) {
             Text(text)
                 .font(.system(.body, design: .default))
-                .foregroundStyle(SwiftLMTheme.textPrimary)
+                .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 .textSelection(.enabled)
             BlinkingCursor()
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(.ultraThinMaterial)
-        .background(SwiftLMTheme.surface.opacity(0.80))
+        .background(SwiftBuddyTheme.surface.opacity(0.80))
         .clipShape(AssistantBubbleShape())
         .overlay(
             AssistantBubbleShape()
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
         .shadow(
-            color: SwiftLMTheme.shadowBubble.color,
-            radius: SwiftLMTheme.shadowBubble.radius,
-            x: SwiftLMTheme.shadowBubble.x,
-            y: SwiftLMTheme.shadowBubble.y
+            color: SwiftBuddyTheme.shadowBubble.color,
+            radius: SwiftBuddyTheme.shadowBubble.radius,
+            x: SwiftBuddyTheme.shadowBubble.x,
+            y: SwiftBuddyTheme.shadowBubble.y
         )
     }
 
@@ -158,7 +158,7 @@ struct StreamingBubble: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(.ultraThinMaterial)
-        .background(SwiftLMTheme.surface.opacity(0.80))
+        .background(SwiftBuddyTheme.surface.opacity(0.80))
         .clipShape(AssistantBubbleShape())
         .overlay(
             AssistantBubbleShape()
@@ -179,19 +179,19 @@ private struct ThinkingPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header toggle
             Button {
-                withAnimation(SwiftLMTheme.spring) { isExpanded.toggle() }
+                withAnimation(SwiftBuddyTheme.spring) { isExpanded.toggle() }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "brain.filled.head.profile")
                         .font(.caption)
-                        .foregroundStyle(SwiftLMTheme.accentSecondary)
+                        .foregroundStyle(SwiftBuddyTheme.accentSecondary)
                     Text("Thinking…")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(SwiftLMTheme.accentSecondary)
+                        .foregroundStyle(SwiftBuddyTheme.accentSecondary)
                     Spacer()
                     Image(systemName: "chevron.down")
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(SwiftLMTheme.textTertiary)
+                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
                         .rotationEffect(.degrees(isExpanded ? 0 : -90))
                 }
                 .padding(.horizontal, 10)
@@ -204,18 +204,18 @@ private struct ThinkingPanel: View {
                 ScrollView {
                     Text(text)
                         .font(.caption)
-                        .foregroundStyle(SwiftLMTheme.textSecondary)
+                        .foregroundStyle(SwiftBuddyTheme.textSecondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
                 }
                 .frame(maxHeight: 160)
             }
         }
-        .background(SwiftLMTheme.thinkingGradient)
-        .clipShape(RoundedRectangle(cornerRadius: SwiftLMTheme.radiusMedium))
+        .background(SwiftBuddyTheme.thinkingGradient)
+        .clipShape(RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium))
         .overlay(
-            RoundedRectangle(cornerRadius: SwiftLMTheme.radiusMedium)
-                .strokeBorder(SwiftLMTheme.accentSecondary.opacity(0.20), lineWidth: 1)
+            RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium)
+                .strokeBorder(SwiftBuddyTheme.accentSecondary.opacity(0.20), lineWidth: 1)
         )
     }
 }
@@ -230,7 +230,7 @@ private struct BlinkingCursor: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 1.5)
             .frame(width: 2.5, height: 17)
-            .foregroundStyle(SwiftLMTheme.accent)
+            .foregroundStyle(SwiftBuddyTheme.accent)
             .opacity(visible ? 1 : 0)
             .animation(
                 .easeInOut(duration: 0.52).repeatForever(autoreverses: true),
@@ -253,7 +253,7 @@ private struct BouncingDot: View {
     var body: some View {
         Circle()
             .frame(width: 7, height: 7)
-            .foregroundStyle(SwiftLMTheme.textSecondary)
+            .foregroundStyle(SwiftBuddyTheme.textSecondary)
             .offset(y: bouncing ? -5 : 0)
             .animation(
                 .easeInOut(duration: 0.45)

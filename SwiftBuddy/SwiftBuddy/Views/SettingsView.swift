@@ -18,7 +18,7 @@ struct SettingsView: View {
 
     var body: some View {
         ZStack {
-            SwiftLMTheme.background.ignoresSafeArea()
+            SwiftBuddyTheme.background.ignoresSafeArea()
 
             Form {
                 // ── Generation ────────────────────────────────────────────────
@@ -49,7 +49,7 @@ struct SettingsView: View {
                     TextEditor(text: $viewModel.systemPrompt)
                         .frame(minHeight: 88)
                         .font(.callout)
-                        .foregroundStyle(SwiftLMTheme.textPrimary)
+                        .foregroundStyle(SwiftBuddyTheme.textPrimary)
                         .scrollContentBackground(.hidden)
                         .background(Color.clear)
                 } header: {
@@ -57,7 +57,7 @@ struct SettingsView: View {
                 } footer: {
                     Text("Injected as the system message before every conversation.")
                         .font(.caption)
-                        .foregroundStyle(SwiftLMTheme.textTertiary)
+                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
                 }
 
                 // ── Performance (iOS-only) ─────────────────────────────────────
@@ -70,7 +70,7 @@ struct SettingsView: View {
                 } footer: {
                     Text("Performance Mode loosens the RAM budget from 40% to 55%, allowing larger models on your \(String(format: "%.0f GB", ramGB)) device.")
                         .font(.caption)
-                        .foregroundStyle(SwiftLMTheme.textTertiary)
+                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
                 }
                 #endif
 
@@ -83,7 +83,7 @@ struct SettingsView: View {
                         HStack {
                             Spacer()
                             Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
-                                .foregroundStyle(SwiftLMTheme.error)
+                                .foregroundStyle(SwiftBuddyTheme.error)
                             Spacer()
                         }
                     }
@@ -91,7 +91,7 @@ struct SettingsView: View {
 
                 // ── About ─────────────────────────────────────────────────────
                 Section {
-                    aboutRow("SwiftLM Chat", value: "1.0")
+                    aboutRow("SwiftBuddy Chat", value: "1.0")
                     aboutRow("Engine", value: "MLX Swift")
                     aboutRow("Backend", value: "Metal GPU")
                     aboutRow("Platform", value: {
@@ -111,14 +111,14 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         #if os(iOS)
         .navigationBarTitleDisplayMode(isTab ? .large : .inline)
-        .toolbarBackground(SwiftLMTheme.background.opacity(0.90), for: .navigationBar)
+        .toolbarBackground(SwiftBuddyTheme.background.opacity(0.90), for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         #endif
         .toolbar {
             if !isTab {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
-                        .foregroundStyle(SwiftLMTheme.accent)
+                        .foregroundStyle(SwiftBuddyTheme.accent)
                 }
             }
         }
@@ -133,10 +133,10 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Label("Temperature", systemImage: "thermometer.medium")
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 Spacer()
                 Text(String(format: "%.2f", viewModel.config.temperature))
-                    .foregroundStyle(SwiftLMTheme.textSecondary)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
                     .monospacedDigit()
                     .font(.callout)
             }
@@ -144,10 +144,10 @@ struct SettingsView: View {
                 get: { Double(viewModel.config.temperature) },
                 set: { viewModel.config.temperature = Float($0) }
             ), in: 0...2, step: 0.05)
-            .tint(SwiftLMTheme.warning)
+            .tint(SwiftBuddyTheme.warning)
             Text("Higher = more creative, lower = more focused")
                 .font(.caption2)
-                .foregroundStyle(SwiftLMTheme.textTertiary)
+                .foregroundStyle(SwiftBuddyTheme.textTertiary)
         }
         .padding(.vertical, 2)
     }
@@ -156,10 +156,10 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Label("Max Tokens", systemImage: "text.word.spacing")
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 Spacer()
                 Text("\(viewModel.config.maxTokens)")
-                    .foregroundStyle(SwiftLMTheme.textSecondary)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
                     .monospacedDigit()
                     .font(.callout)
             }
@@ -167,7 +167,7 @@ struct SettingsView: View {
                 get: { Double(viewModel.config.maxTokens) },
                 set: { viewModel.config.maxTokens = Int($0) }
             ), in: 128...8192, step: 128)
-            .tint(SwiftLMTheme.accent)
+            .tint(SwiftBuddyTheme.accent)
         }
         .padding(.vertical, 2)
     }
@@ -176,10 +176,10 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Label("Top P", systemImage: "chart.bar.xaxis")
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 Spacer()
                 Text(String(format: "%.2f", viewModel.config.topP))
-                    .foregroundStyle(SwiftLMTheme.textSecondary)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
                     .monospacedDigit()
                     .font(.callout)
             }
@@ -187,7 +187,7 @@ struct SettingsView: View {
                 get: { Double(viewModel.config.topP) },
                 set: { viewModel.config.topP = Float($0) }
             ), in: 0...1, step: 0.05)
-            .tint(SwiftLMTheme.accentSecondary)
+            .tint(SwiftBuddyTheme.accentSecondary)
         }
         .padding(.vertical, 2)
     }
@@ -199,13 +199,13 @@ struct SettingsView: View {
         )) {
             VStack(alignment: .leading, spacing: 2) {
                 Label("Thinking Mode", systemImage: "brain.head.profile")
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 Text("Step-by-step reasoning for Qwen3, DeepSeek-R1, and compatible models")
                     .font(.caption)
-                    .foregroundStyle(SwiftLMTheme.textTertiary)
+                    .foregroundStyle(SwiftBuddyTheme.textTertiary)
             }
         }
-        .tint(SwiftLMTheme.accentSecondary)
+        .tint(SwiftBuddyTheme.accentSecondary)
     }
 
     private var appearancePicker: some View {
@@ -226,7 +226,7 @@ struct SettingsView: View {
             }.tag("system")
         }
         .pickerStyle(.segmented)
-        .tint(SwiftLMTheme.accent)
+        .tint(SwiftBuddyTheme.accent)
     }
 
     #if os(iOS)
@@ -234,13 +234,13 @@ struct SettingsView: View {
         Toggle(isOn: $performanceMode) {
             VStack(alignment: .leading, spacing: 2) {
                 Label("Performance Mode", systemImage: "bolt.fill")
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 Text("Use 55% RAM budget (vs. 40%) — enables more models on 6 GB devices")
                     .font(.caption)
-                    .foregroundStyle(SwiftLMTheme.textTertiary)
+                    .foregroundStyle(SwiftBuddyTheme.textTertiary)
             }
         }
-        .tint(SwiftLMTheme.accent)
+        .tint(SwiftBuddyTheme.accent)
     }
 
     @State private var tempEngine: InferenceEngine? = nil
@@ -256,29 +256,29 @@ struct SettingsView: View {
         )) {
             VStack(alignment: .leading, spacing: 2) {
                 Label("Auto-Unload in Background", systemImage: "iphone.slash")
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 Text("Frees GPU memory when the app backgrounds (recommended on iPhone)")
                     .font(.caption)
-                    .foregroundStyle(SwiftLMTheme.textTertiary)
+                    .foregroundStyle(SwiftBuddyTheme.textTertiary)
             }
         }
-        .tint(SwiftLMTheme.success)
+        .tint(SwiftBuddyTheme.success)
     }
     #endif
 
     private func aboutRow(_ label: String, value: String) -> some View {
         HStack {
             Text(label)
-                .foregroundStyle(SwiftLMTheme.textPrimary)
+                .foregroundStyle(SwiftBuddyTheme.textPrimary)
             Spacer()
             Text(value)
-                .foregroundStyle(SwiftLMTheme.textSecondary)
+                .foregroundStyle(SwiftBuddyTheme.textSecondary)
         }
     }
 
     private func sectionLabel(_ title: String, icon: String) -> some View {
         Label(title, systemImage: icon)
-            .foregroundStyle(SwiftLMTheme.textTertiary)
+            .foregroundStyle(SwiftBuddyTheme.textTertiary)
             .font(.footnote.weight(.semibold))
             .textCase(.uppercase)
     }

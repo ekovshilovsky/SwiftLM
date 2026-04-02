@@ -15,7 +15,7 @@ struct ChatView: View {
     var body: some View {
         ZStack {
             // ── Deep canvas background ───────────────────────────────────────
-            SwiftLMTheme.background.ignoresSafeArea()
+            SwiftBuddyTheme.background.ignoresSafeArea()
 
             VStack(spacing: 0) {
                 // ── Message list ─────────────────────────────────────────────
@@ -28,11 +28,11 @@ struct ChatView: View {
                 inputBar
             }
         }
-        .navigationTitle("SwiftLM Chat")
+        .navigationTitle("SwiftBuddy Chat")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { iOSToolbar }
-        .toolbarBackground(SwiftLMTheme.background.opacity(0.90), for: .navigationBar)
+        .toolbarBackground(SwiftBuddyTheme.background.opacity(0.90), for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         #else
         .toolbar { macOSToolbar }
@@ -92,14 +92,14 @@ struct ChatView: View {
                 VStack(spacing: 6) {
                     Text("Downloading model…")
                         .font(.headline)
-                        .foregroundStyle(SwiftLMTheme.textPrimary)
+                        .foregroundStyle(SwiftBuddyTheme.textPrimary)
                     Text(speed.isEmpty ? "Preparing…" : speed)
                         .font(.caption.monospacedDigit())
-                        .foregroundStyle(SwiftLMTheme.textSecondary)
+                        .foregroundStyle(SwiftBuddyTheme.textSecondary)
                 }
                 Text("You'll be able to chat once the download completes.")
                     .font(.caption)
-                    .foregroundStyle(SwiftLMTheme.textTertiary)
+                    .foregroundStyle(SwiftBuddyTheme.textTertiary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 40)
             }
@@ -108,15 +108,15 @@ struct ChatView: View {
             VStack(spacing: 16) {
                 ZStack {
                     Circle()
-                        .stroke(SwiftLMTheme.accent.opacity(0.15), lineWidth: 3)
+                        .stroke(SwiftBuddyTheme.accent.opacity(0.15), lineWidth: 3)
                         .frame(width: 64, height: 64)
                     ProgressView()
                         .controlSize(.large)
-                        .tint(SwiftLMTheme.accent)
+                        .tint(SwiftBuddyTheme.accent)
                 }
                 Text("Loading model into Metal GPU…")
                     .font(.subheadline)
-                    .foregroundStyle(SwiftLMTheme.textSecondary)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
             }
 
         case .idle:
@@ -126,13 +126,13 @@ struct ChatView: View {
             VStack(spacing: 14) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 44))
-                    .foregroundStyle(SwiftLMTheme.error)
+                    .foregroundStyle(SwiftBuddyTheme.error)
                 Text("Load failed")
                     .font(.headline)
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 Text(msg)
                     .font(.caption)
-                    .foregroundStyle(SwiftLMTheme.textSecondary)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 40)
             }
@@ -143,10 +143,10 @@ struct ChatView: View {
                 brandMark
                 Text("Start a conversation")
                     .font(.headline)
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 Text("Type a message below to begin.")
                     .font(.subheadline)
-                    .foregroundStyle(SwiftLMTheme.textSecondary)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
             }
         }
     }
@@ -155,14 +155,14 @@ struct ChatView: View {
     private var brandMark: some View {
         ZStack {
             Circle()
-                .fill(SwiftLMTheme.heroGradient)
+                .fill(SwiftBuddyTheme.heroGradient)
                 .frame(width: 80, height: 80)
-                .shadow(color: SwiftLMTheme.accent.opacity(0.35), radius: 18)
+                .shadow(color: SwiftBuddyTheme.accent.opacity(0.35), radius: 18)
 
             Image(systemName: "bolt.fill")
                 .font(.system(size: 34, weight: .semibold))
                 .foregroundStyle(
-                    LinearGradient(colors: [.white, SwiftLMTheme.cyan],
+                    LinearGradient(colors: [.white, SwiftBuddyTheme.cyan],
                                    startPoint: .top, endPoint: .bottom)
                 )
         }
@@ -174,15 +174,15 @@ struct ChatView: View {
             brandMark
 
             VStack(spacing: 6) {
-                Text("SwiftLM Chat")
+                Text("SwiftBuddy Chat")
                     .font(.title2.weight(.bold))
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
 
                 Text("Run any model. Locally. Instantly.")
                     .font(.subheadline)
                     .foregroundStyle(
                         LinearGradient(
-                            colors: [SwiftLMTheme.accent, SwiftLMTheme.cyan],
+                            colors: [SwiftBuddyTheme.accent, SwiftBuddyTheme.cyan],
                             startPoint: .leading, endPoint: .trailing
                         )
                     )
@@ -190,7 +190,7 @@ struct ChatView: View {
 
             Text("Go to the **Models** tab to download\na model and start chatting.")
                 .font(.caption)
-                .foregroundStyle(SwiftLMTheme.textTertiary)
+                .foregroundStyle(SwiftBuddyTheme.textTertiary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
         }
@@ -200,18 +200,18 @@ struct ChatView: View {
     private func downloadRing(progress: Double) -> some View {
         ZStack {
             Circle()
-                .stroke(SwiftLMTheme.accent.opacity(0.15), lineWidth: 6)
+                .stroke(SwiftBuddyTheme.accent.opacity(0.15), lineWidth: 6)
             Circle()
                 .trim(from: 0, to: progress)
                 .stroke(
-                    SwiftLMTheme.avatarGradient,
+                    SwiftBuddyTheme.avatarGradient,
                     style: StrokeStyle(lineWidth: 6, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
                 .animation(.linear(duration: 0.3), value: progress)
             Text("\(Int(progress * 100))%")
                 .font(.caption.monospacedDigit().weight(.semibold))
-                .foregroundStyle(SwiftLMTheme.textPrimary)
+                .foregroundStyle(SwiftBuddyTheme.textPrimary)
         }
         .frame(width: 72, height: 72)
     }
@@ -222,36 +222,36 @@ struct ChatView: View {
     private var engineBanner: some View {
         switch engine.state {
         case .idle:
-            bannerRow(icon: "cpu", text: "No model loaded", color: SwiftLMTheme.textTertiary)
+            bannerRow(icon: "cpu", text: "No model loaded", color: SwiftBuddyTheme.textTertiary)
         case .loading:
             HStack(spacing: 8) {
-                ProgressView().controlSize(.mini).tint(SwiftLMTheme.accent)
+                ProgressView().controlSize(.mini).tint(SwiftBuddyTheme.accent)
                 Text("Loading model…")
                     .font(.caption)
-                    .foregroundStyle(SwiftLMTheme.textSecondary)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
                 Spacer()
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
-            .background(SwiftLMTheme.surface.opacity(0.90))
+            .background(SwiftBuddyTheme.surface.opacity(0.90))
         case .downloading(let p, let speed):
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("Downloading…")
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(SwiftLMTheme.textSecondary)
+                        .foregroundStyle(SwiftBuddyTheme.textSecondary)
                     Spacer()
                     Text("\(Int(p * 100))% · \(speed)")
                         .font(.caption2.monospacedDigit())
-                        .foregroundStyle(SwiftLMTheme.textTertiary)
+                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
                 }
-                ProgressView(value: p).tint(SwiftLMTheme.accent)
+                ProgressView(value: p).tint(SwiftBuddyTheme.accent)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
-            .background(SwiftLMTheme.surface.opacity(0.90))
+            .background(SwiftBuddyTheme.surface.opacity(0.90))
         case .error(let msg):
-            bannerRow(icon: "exclamationmark.triangle.fill", text: msg, color: SwiftLMTheme.error)
+            bannerRow(icon: "exclamationmark.triangle.fill", text: msg, color: SwiftBuddyTheme.error)
         case .ready, .generating:
             EmptyView()
         }
@@ -268,7 +268,7 @@ struct ChatView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background(SwiftLMTheme.surface.opacity(0.90))
+        .background(SwiftBuddyTheme.surface.opacity(0.90))
     }
 
     // MARK: — Input Bar
@@ -280,7 +280,7 @@ struct ChatView: View {
                 TextField("Message", text: $inputText, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(.body))
-                    .foregroundStyle(SwiftLMTheme.textPrimary)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
                     .lineLimit(1...8)
                     .focused($inputFocused)
                     .onSubmit {
@@ -289,22 +289,22 @@ struct ChatView: View {
                         #endif
                     }
                     .disabled(!engine.state.canSend)
-                    .accentColor(SwiftLMTheme.accent)
+                    .accentColor(SwiftBuddyTheme.accent)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(.ultraThinMaterial)
-            .background(SwiftLMTheme.surface.opacity(0.70))
-            .clipShape(RoundedRectangle(cornerRadius: SwiftLMTheme.radiusXL))
+            .background(SwiftBuddyTheme.surface.opacity(0.70))
+            .clipShape(RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusXL))
             .overlay(
-                RoundedRectangle(cornerRadius: SwiftLMTheme.radiusXL)
+                RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusXL)
                     .strokeBorder(
                         inputFocused
-                            ? SwiftLMTheme.accent.opacity(0.55)
+                            ? SwiftBuddyTheme.accent.opacity(0.55)
                             : Color.white.opacity(0.08),
                         lineWidth: inputFocused ? 1.5 : 1
                     )
-                    .animation(SwiftLMTheme.quickSpring, value: inputFocused)
+                    .animation(SwiftBuddyTheme.quickSpring, value: inputFocused)
             )
             .glowRing(active: inputFocused)
 
@@ -313,11 +313,11 @@ struct ChatView: View {
                 Button(action: viewModel.stopGeneration) {
                     ZStack {
                         Circle()
-                            .fill(SwiftLMTheme.error.opacity(0.18))
+                            .fill(SwiftBuddyTheme.error.opacity(0.18))
                             .frame(width: 40, height: 40)
                         Image(systemName: "stop.fill")
                             .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(SwiftLMTheme.error)
+                            .foregroundStyle(SwiftBuddyTheme.error)
                     }
                 }
                 .buttonStyle(.plain)
@@ -325,22 +325,22 @@ struct ChatView: View {
                 Button(action: sendMessage) {
                     ZStack {
                         Circle()
-                            .fill(canSend ? AnyShapeStyle(SwiftLMTheme.userBubbleGradient) : AnyShapeStyle(Color.white.opacity(0.08)))
+                            .fill(canSend ? AnyShapeStyle(SwiftBuddyTheme.userBubbleGradient) : AnyShapeStyle(Color.white.opacity(0.08)))
                             .frame(width: 40, height: 40)
                         Image(systemName: "arrow.up")
                             .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(canSend ? .white : SwiftLMTheme.textTertiary)
+                            .foregroundStyle(canSend ? .white : SwiftBuddyTheme.textTertiary)
                     }
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend)
                 .keyboardShortcut(.return, modifiers: .command)
-                .animation(SwiftLMTheme.quickSpring, value: canSend)
+                .animation(SwiftBuddyTheme.quickSpring, value: canSend)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(SwiftLMTheme.background.opacity(0.95))
+        .background(SwiftBuddyTheme.background.opacity(0.95))
     }
 
     private var canSend: Bool {
@@ -368,7 +368,7 @@ struct ChatView: View {
             if inputFocused {
                 Button { inputFocused = false } label: {
                     Image(systemName: "keyboard.chevron.compact.down")
-                        .foregroundStyle(SwiftLMTheme.textSecondary)
+                        .foregroundStyle(SwiftBuddyTheme.textSecondary)
                 }
                 .transition(.opacity)
             }
@@ -377,7 +377,7 @@ struct ChatView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Button { viewModel.newConversation() } label: {
                 Image(systemName: "square.and.pencil")
-                    .foregroundStyle(SwiftLMTheme.accent)
+                    .foregroundStyle(SwiftBuddyTheme.accent)
             }
         }
     }
@@ -393,13 +393,13 @@ struct ChatView: View {
             }
             Text(engine.state.shortLabel)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(SwiftLMTheme.textPrimary)
+                .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 .lineLimit(1)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
         .background(.ultraThinMaterial)
-        .background(SwiftLMTheme.surface.opacity(0.70))
+        .background(SwiftBuddyTheme.surface.opacity(0.70))
         .clipShape(Capsule())
         .overlay(Capsule().strokeBorder(Color.white.opacity(0.09), lineWidth: 1))
     }
@@ -432,11 +432,11 @@ extension ModelState {
 
     var statusColor: Color {
         switch self {
-        case .idle:                       return SwiftLMTheme.textTertiary
-        case .loading, .downloading:      return SwiftLMTheme.warning
-        case .ready:                      return SwiftLMTheme.success
-        case .generating:                 return SwiftLMTheme.accent
-        case .error:                      return SwiftLMTheme.error
+        case .idle:                       return SwiftBuddyTheme.textTertiary
+        case .loading, .downloading:      return SwiftBuddyTheme.warning
+        case .ready:                      return SwiftBuddyTheme.success
+        case .generating:                 return SwiftBuddyTheme.accent
+        case .error:                      return SwiftBuddyTheme.error
         }
     }
 

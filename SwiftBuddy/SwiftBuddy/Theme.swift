@@ -1,4 +1,4 @@
-// Theme.swift — SwiftLM Chat design system
+// Theme.swift — SwiftBuddy Chat design system
 // Single source of truth for colors, gradients, radii, and animations.
 import SwiftUI
 
@@ -6,7 +6,7 @@ import SwiftUI
 // MARK: — Color Tokens
 // ─────────────────────────────────────────────────────────────────────────────
 
-public enum SwiftLMTheme {
+public enum SwiftBuddyTheme {
 
     // ── Background layers ─────────────────────────────────────────────────────
     /// Deep navy-black canvas — the app's primary background.
@@ -121,15 +121,15 @@ public enum SwiftLMTheme {
 
 extension View {
     /// Apply a glowing indigo ring — used on focused input and hero cards.
-    func glowRing(color: Color = SwiftLMTheme.accent, radius: CGFloat = 8, active: Bool = true) -> some View {
+    func glowRing(color: Color = SwiftBuddyTheme.accent, radius: CGFloat = 8, active: Bool = true) -> some View {
         self.shadow(color: active ? color.opacity(0.55) : .clear, radius: radius)
     }
 
     /// Glassmorphic card surface.
-    func glassCard(cornerRadius: CGFloat = SwiftLMTheme.radiusMedium) -> some View {
+    func glassCard(cornerRadius: CGFloat = SwiftBuddyTheme.radiusMedium) -> some View {
         self
             .background(.ultraThinMaterial)
-            .background(SwiftLMTheme.surface.opacity(0.65))
+            .background(SwiftBuddyTheme.surface.opacity(0.65))
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius)
@@ -168,7 +168,7 @@ struct GeneratingDots: View {
             ForEach(0..<3) { i in
                 Circle()
                     .frame(width: 5, height: 5)
-                    .foregroundStyle(SwiftLMTheme.accent)
+                    .foregroundStyle(SwiftBuddyTheme.accent)
                     .scaleEffect(phase == i ? 1.5 : 0.8)
                     .opacity(phase == i ? 1.0 : 0.45)
                     .animation(
@@ -196,7 +196,7 @@ struct AvatarView: View {
             // Outer glow ring when generating
             if isGenerating {
                 Circle()
-                    .stroke(SwiftLMTheme.accent.opacity(pulse ? 0.55 : 0.15), lineWidth: 2)
+                    .stroke(SwiftBuddyTheme.accent.opacity(pulse ? 0.55 : 0.15), lineWidth: 2)
                     .frame(width: size + 8, height: size + 8)
                     .scaleEffect(pulse ? 1.12 : 1.0)
                     .animation(
@@ -207,7 +207,7 @@ struct AvatarView: View {
 
             // Avatar circle
             Circle()
-                .fill(SwiftLMTheme.avatarGradient)
+                .fill(SwiftBuddyTheme.avatarGradient)
                 .frame(width: size, height: size)
                 .overlay(
                     Image(systemName: "bolt.fill")
