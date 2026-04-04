@@ -922,8 +922,12 @@ func handleChatCompletion(
 
     // ── JSON mode: inject system prompt for JSON output ──
     if jsonMode {
-        let jsonSystemMsg = Chat.Message.system("You must respond with valid JSON only. No markdown code fences, no explanation text, no preamble. Output raw JSON.")
-        chatMessages.insert(jsonSystemMsg, at: 0)
+        let jsonStr = "You must respond with valid JSON only. No markdown code fences, no explanation text, no preamble. Output raw JSON."
+        if !chatMessages.isEmpty && chatMessages[0].role == .system {
+            chatMessages[0].content += "\n\n" + jsonStr
+        } else {
+            chatMessages.insert(.system(jsonStr), at: 0)
+        }
         systemPromptText = "JSON_MODE:" + systemPromptText
     }
 
