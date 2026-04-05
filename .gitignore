@@ -20,3 +20,4 @@ DerivedData/
 *.pid
 curl_out.txt
 sample.txt
+tmp/
