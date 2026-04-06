@@ -5,9 +5,7 @@ A blazingly fast, native Swift inference server that serves [MLX](https://github
 No Python runtime, no Global Interpreter Lock (GIL), no unnecessary memory copies. Just bare-metal Apple Silicon performance compiled to a single binary.
 
 <p align="center">
-  <img src="docs/mac_demo.gif" width="480" alt="SwiftLM Mac macOS demo" />
-  &nbsp;&nbsp;
-  <img src="docs/demo.gif" width="240" alt="SwiftLM Chat iOS demo" />
+  <img src="docs/mac_demo.gif" width="720" alt="SwiftLM Mac macOS demo" />
 </p>
 
 ---
@@ -157,6 +155,10 @@ python3 tests/run_4models_benchmark.py
 ---
 
 ## 📱 SwiftLM Chat — iOS App
+
+<p align="center">
+  <img src="docs/demo.gif" width="320" alt="SwiftLM Chat iOS demo" />
+</p>
 
 A native iPhone & iPad companion app that downloads MLX models directly from HuggingFace and runs inference on-device via MLX Swift.
 
