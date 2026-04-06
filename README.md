@@ -84,9 +84,11 @@ Reference implementations: [`turboquant-mlx`](https://github.com/sharpner/turboq
 To verify the stability of the prompt cache when interleaving long contexts with sliding window attention (e.g. Gemma 4/Mistral 3), run this extreme test sequence:
 ```bash
 # 1. Start the server with a large sliding-window MoE model
-./SwiftLM --model mlx-community/gemma-4-26b-a4b-it-4bit --port 5431 --turbo-kv --stream-experts --ctx-size 16384
+.build/release/SwiftLM --model mlx-community/gemma-4-26b-a4b-it-4bit --port 5431 --turbo-kv --stream-experts --ctx-size 16384
 
-# 2. Run the 4-request sliding window regression test:
+# 2. Run the 4-request sliding window regression test.
+# (Note: This assumes you have created a /tmp/big_prompt.json file matching the OpenAI request
+# format with a large ~5K token string inside the "content" field.)
 echo "=== Req 1 (Big 5537t) ===" && curl -sS --max-time 120 http://127.0.0.1:5431/v1/chat/completions -H "Content-Type: application/json" -d @/tmp/big_prompt.json 2>&1 | python3 -c "import sys,json;d=json.load(sys.stdin);print('OK:',d['choices'][0]['message']['content'])" && \
 echo "=== Req 2 (Short 18t) ===" && curl -sS --max-time 60 http://127.0.0.1:5431/v1/chat/completions -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"What is today?"}],"max_tokens":30}' 2>&1 | python3 -c "import sys,json;d=json.load(sys.stdin);print('OK:',d['choices'][0]['message']['content'])" && \
 echo "=== Req 3 (Big 5537t) ===" && curl -sS --max-time 120 http://127.0.0.1:5431/v1/chat/completions -H "Content-Type: application/json" -d @/tmp/big_prompt.json 2>&1 | python3 -c "import sys,json;d=json.load(sys.stdin);print('OK:',d['choices'][0]['message']['content'])" && \
