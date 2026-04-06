@@ -7,28 +7,27 @@ git submodule update --init --recursive
 echo "=> Building SwiftLM (release)..."
 swift build -c release
 
+# --- Copy the pre-built default.metallib next to the binary ---
+# NOTE: default.metallib is a PRE-BUILT artifact tracked in the mlx-swift
+# submodule via `git add -f`. It CANNOT be compiled locally because the MLX
+# Metal kernel sources (bf16_math.h) conflict with newer macOS Metal SDK
+# versions. The metallib must be version-matched to the mlx-swift C++ code
+# that was compiled into the SwiftLM binary. Do NOT substitute it with the
+# Python mlx-metal pip package — that causes GPU kernel ABI corruption.
+
 echo "=> Copying default.metallib..."
-# Dynamically find the default.metallib in case of path changes in submodules
-METALLIB_SRC=$(find . -name "default.metallib" | grep -v "\.build" | head -n 1)
+METALLIB_SRC="LocalPackages/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/kernels/default.metallib"
 METALLIB_DEST=".build/arm64-apple-macosx/release/"
 
-# Also resolving the generic release symlink folder just in case
-METALLIB_DEST_SYMLINK=".build/release/"
-
-if [ -n "$METALLIB_SRC" ] && [ -f "$METALLIB_SRC" ]; then
+if [ -f "$METALLIB_SRC" ]; then
     mkdir -p "$METALLIB_DEST"
     cp "$METALLIB_SRC" "$METALLIB_DEST"
-    
-    if [ -d "$METALLIB_DEST_SYMLINK" ]; then
-        cp "$METALLIB_SRC" "$METALLIB_DEST_SYMLINK"
-    fi
-    
-    # Also copying to root to be safe
-    cp "$METALLIB_SRC" ./
-    
-    echo "✅ Successfully copied default.metallib from $METALLIB_SRC"
+    echo "✅ Copied default.metallib to $METALLIB_DEST"
 else
-    echo "⚠️  Warning: default.metallib not found anywhere in the project! MLX GPU operations may fail."
+    echo "⚠️  default.metallib not found at $METALLIB_SRC"
+    echo "   This file must be tracked in git. Run:"
+    echo "     git add -f $METALLIB_SRC && git commit -m 'Track default.metallib'"
+    exit 1
 fi
 
 echo "=> Build complete!"
