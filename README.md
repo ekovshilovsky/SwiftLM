@@ -10,6 +10,46 @@ No Python runtime, no Global Interpreter Lock (GIL), no unnecessary memory copie
 
 ---
 
+## 🏁 Getting Started
+
+### Fastest: Download Pre-built Binary
+
+Download the latest release tarball from the [Releases page](https://github.com/SharpAI/SwiftLM/releases).
+The archive is **self-contained** — `mlx.metallib` is bundled alongside the binary.
+
+```bash
+tar -xzf SwiftLM-<version>-macos-arm64.tar.gz
+./SwiftLM --model mlx-community/Qwen2.5-3B-Instruct-4bit --port 5413
+```
+
+> **⚠️ Metal GPU Error?** If you see `Failed to load the default metallib`, make sure `mlx.metallib` is co-located with the `SwiftLM` binary.
+
+### Build from Source
+
+The build script handles everything: submodules, cmake, Metal kernel compilation, and the Swift build.
+
+```bash
+git clone --recursive https://github.com/SharpAI/SwiftLM
+cd SwiftLM
+./build.sh
+```
+
+This will:
+1. Initialize git submodules
+2. Install `cmake` via Homebrew (if not already installed)
+3. Compile `mlx.metallib` from the Metal kernel sources
+4. Build the `SwiftLM` binary in release mode
+
+Then start the server (models download automatically if not cached):
+```bash
+.build/release/SwiftLM \
+  --model mlx-community/Qwen3.5-122B-A10B-4bit \
+  --stream-experts \
+  --port 5413
+```
+
+*(Add `--stream-experts` when running oversized MoE models like Qwen3.5 122B to bypass macOS virtual memory swapping and stream expert layers directly from NVMe.)*
+
 ## 📊 Performance: Gemma 4-26B on Apple Silicon
 
 Benchmark results for `gemma-4-26b-a4b-it-4bit` (26B MoE, 4-bit) on M5 Pro 64 GB.
@@ -148,45 +188,7 @@ Then in Xcode:
 
 ---
 
-## 🛠️ Quick Start (macOS Server)
 
-### Fastest: Download Pre-built Binary
-
-Download the latest release tarball from the [Releases page](https://github.com/SharpAI/SwiftLM/releases).
-The archive is **self-contained** — `mlx.metallib` is bundled alongside the binary.
-
-```bash
-tar -xzf SwiftLM-<version>-macos-arm64.tar.gz
-./SwiftLM --model mlx-community/Qwen2.5-3B-Instruct-4bit --port 5413
-```
-
-> **⚠️ Metal GPU Error?** If you see `Failed to load the default metallib`, make sure `mlx.metallib` is co-located with the `SwiftLM` binary.
-
-### Build from Source
-
-The build script handles everything: submodules, cmake, Metal kernel compilation, and the Swift build.
-
-```bash
-git clone --recursive https://github.com/SharpAI/SwiftLM
-cd SwiftLM
-./build.sh
-```
-
-This will:
-1. Initialize git submodules
-2. Install `cmake` via Homebrew (if not already installed)
-3. Compile `mlx.metallib` from the Metal kernel sources
-4. Build the `SwiftLM` binary in release mode
-
-Then run:
-```bash
-.build/release/SwiftLM \
-  --model mlx-community/Qwen3.5-122B-A10B-4bit \
-  --stream-experts \
-  --port 5413
-```
-
-*(Add `--stream-experts` when running oversized MoE models like Qwen3.5 122B to bypass macOS virtual memory swapping and stream expert layers directly from NVMe.)*
 
 ---
 
