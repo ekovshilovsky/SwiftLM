@@ -187,23 +187,17 @@ if [ "$suite_opt" == "3" ]; then
     echo ""
     echo "Server is up! Executing DeepCamera HomeSec Benchmark..."
     
-    BENCHMARK_DIR="../DeepCamera/skills/analysis/home-security-benchmark"
+    LOCAL_BENCHMARK="./homesec-benchmark"
+    BENCHMARK_DIR="$LOCAL_BENCHMARK/skills/analysis/home-security-benchmark"
     if [ ! -d "$BENCHMARK_DIR" ]; then
-        if [ ! -d "../DeepCamera" ]; then
-            echo "DeepCamera benchmark skill not found locally. Cloning thinly via git sparse-checkout..."
-            git clone --filter=blob:none --no-checkout https://github.com/SharpAI/DeepCamera.git ../DeepCamera
-            pushd ../DeepCamera > /dev/null
-            git sparse-checkout init --cone
-            git sparse-checkout set skills/analysis/home-security-benchmark
-            git checkout master 2>/dev/null || git checkout main
-            popd > /dev/null
-        else
-            echo "⚠️ ../DeepCamera exists but doesn't contain the benchmark."
-            echo "Cleaning up..."
-            killall SwiftLM
-            wait $SERVER_PID 2>/dev/null
-            exit 1
-        fi
+        echo "HomeSec benchmark skill not found locally. Cloning thinly via git sparse-checkout..."
+        rm -rf "$LOCAL_BENCHMARK"
+        git clone --filter=blob:none --no-checkout https://github.com/SharpAI/DeepCamera.git "$LOCAL_BENCHMARK"
+        pushd "$LOCAL_BENCHMARK" > /dev/null
+        git sparse-checkout init --cone
+        git sparse-checkout set skills/analysis/home-security-benchmark
+        git checkout master 2>/dev/null || git checkout main
+        popd > /dev/null
     fi
     
     # Run the benchmark against the LLM gateway. Not specifying --vlm disables VLM tests.
