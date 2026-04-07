@@ -61,7 +61,7 @@ public struct HFModelResult: Identifiable, Sendable, Decodable {
 // MARK: — Sort options (matching Aegis-AI LocalLanguageModels sort selector)
 
 public enum HFSortOption: String, CaseIterable, Sendable {
-    case trending    = "trending"
+    case trending    = "trendingScore"
     case downloads   = "downloads"
     case likes       = "likes"
     case lastModified = "lastModified"
