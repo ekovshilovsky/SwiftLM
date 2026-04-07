@@ -54,10 +54,10 @@ Auto-Save Hooks:     ❌ Not implemented
 ### Tier 3: Mining & Extraction
 | # | Feature | Upstream | SwiftBuddy | Status | Test |
 |---|---------|----------|------------|--------|------|
-| 13 | Mine project files (code + docs) | ✅ | ❌ | 🔲 TODO | — |
+| 13 | Mine project files (code + docs) | ✅ | ✅ via `ProjectMiner` | ✅ PASS | `ProjectMinerTests` |
 | 14 | Mine conversation exports | ✅ | ❌ | 🔲 TODO | — |
 | 15 | General extraction (auto-classify) | ✅ | Partial (LLM-based) | 🔄 WIP | — |
-| 16 | Split mega-files into sessions | ✅ | ❌ | 🔲 TODO | — |
+| 16 | Split mega-files into sessions | ✅ | ✅ via `chunkBySentences` | ✅ PASS | `ProjectMinerTests` |
 
 ### Tier 4: Tool Calling (MCP Parity)
 | # | Feature | Upstream MCP Tool | SwiftBuddy Tool | Status | Test |
