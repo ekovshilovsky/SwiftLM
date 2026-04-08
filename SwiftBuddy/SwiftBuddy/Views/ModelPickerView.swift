@@ -417,10 +417,12 @@ private struct HFModelRow: View {
         Button {
             if isDownloaded {
                 onSelect(model.id)
-            } else if activeProgress == nil {
+            } else if activeProgress == nil && !pendingLoad {
                 pendingLoad = true
                 Task {
-                    _ = downloadManager.startDownload(modelId: model.id)
+                    _ = await downloadManager.startDownload(modelId: model.id).result
+                    // Fallback reset if the download abruptly errors out offline without completing
+                    if !isDownloaded { pendingLoad = false }
                 }
             }
         } label: {
@@ -485,7 +487,7 @@ private struct HFModelRow: View {
                             .font(.title3)
                             .foregroundStyle(.green)
                             .padding(.top, 2)
-                    } else if activeProgress != nil {
+                    } else if activeProgress != nil || pendingLoad {
                         ProgressView()
                             .controlSize(.small)
                             .padding(.top, 2)

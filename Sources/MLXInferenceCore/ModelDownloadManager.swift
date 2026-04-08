@@ -156,47 +156,52 @@ public final class ModelDownloadManager: ObservableObject {
         downloadTasks[modelId]?.cancel()
 
         let task = Task<Void, Error> {
-            defer {
-                Task { @MainActor [weak self] in
-                    self?.activeDownloads.removeValue(forKey: modelId)
-                }
-            }
-
-            #if !os(macOS)
-            try await ModelDownloader.shared.download(modelId: modelId) { [weak self] fp in
-                Task { @MainActor [weak self] in
-                    self?.activeDownloads[modelId] = ModelDownloadProgress(
-                        modelId: modelId,
-                        fractionCompleted: fp.overallFraction,
-                        currentFile: fp.fileName,
-                        speedMBps: fp.speedBytesPerSec.map { $0 / 1_000_000 }
-                    )
-                }
-            }
-            #else
-            let hub = HubApi(downloadBase: ModelStorage.cacheRoot)
-            _ = try await hub.snapshot(
-                from: modelId,
-                matching: ["*.safetensors", "*.json", "*.model", "*.txt", "*.tiktoken"],
-                progressHandler: { [weak self] progress in
+            do {
+                defer {
                     Task { @MainActor [weak self] in
-                        let pct = progress.fractionCompleted
-                        let speedBytesPerSec = progress.userInfo[ProgressUserInfoKey("throughputKey")] as? Double
+                        self?.activeDownloads.removeValue(forKey: modelId)
+                    }
+                }
+
+                #if !os(macOS)
+                try await ModelDownloader.shared.download(modelId: modelId) { [weak self] fp in
+                    Task { @MainActor [weak self] in
                         self?.activeDownloads[modelId] = ModelDownloadProgress(
                             modelId: modelId,
-                            fractionCompleted: pct,
-                            currentFile: "",
-                            speedMBps: speedBytesPerSec.map { $0 / 1_000_000 }
+                            fractionCompleted: fp.overallFraction,
+                            currentFile: fp.fileName,
+                            speedMBps: fp.speedBytesPerSec.map { $0 / 1_000_000 }
                         )
                     }
                 }
-            )
-            #endif
+                #else
+                let hub = HubApi(downloadBase: ModelStorage.cacheRoot)
+                _ = try await hub.snapshot(
+                    from: modelId,
+                    matching: ["*.safetensors", "*.json", "*.model", "*.txt", "*.tiktoken"],
+                    progressHandler: { [weak self] progress in
+                        Task { @MainActor [weak self] in
+                            let pct = progress.fractionCompleted
+                            let speedBytesPerSec = progress.userInfo[ProgressUserInfoKey("throughputKey")] as? Double
+                            self?.activeDownloads[modelId] = ModelDownloadProgress(
+                                modelId: modelId,
+                                fractionCompleted: pct,
+                                currentFile: "",
+                                speedMBps: speedBytesPerSec.map { $0 / 1_000_000 }
+                            )
+                        }
+                    }
+                )
+                #endif
 
-            Task { @MainActor [weak self] in
-                self?.activeDownloads.removeValue(forKey: modelId)
-                self?.lastLoadedModelId = modelId
-                self?.refresh()
+                Task { @MainActor [weak self] in
+                    self?.activeDownloads.removeValue(forKey: modelId)
+                    self?.lastLoadedModelId = modelId
+                    self?.refresh()
+                }
+            } catch {
+                print("\n[ModelDownloadManager] HuggingFace Download Failed for \(modelId): \(error.localizedDescription)\n")
+                throw error
             }
         }
 
