@@ -44,7 +44,9 @@ jobs:
           file .build/release/SwiftLM
 
       - name: SwiftBuddy Tests (MemPalace & Lifecycle)
-        run: swift test --filter SwiftBuddyTests
+        run: |
+          export MLX_METAL_PATH="$(find .build -name mlx.metallib | head -n 1)"
+          swift test --filter SwiftBuddyTests
 
       - name: TurboQuant unit tests
         run: |
