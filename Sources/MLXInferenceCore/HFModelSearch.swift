@@ -194,23 +194,27 @@ public final class HFModelSearchService: ObservableObject {
                 var page = try JSONDecoder().decode([HFModelResult].self, from: data)
                 print("HFSearch: Decoded \(page.count) models. Fetching storage sizes...")
                 
-                // Fetch usedStorage for each model in parallel
-                try await withThrowingTaskGroup(of: (Int, Int64?).self) { group in
+                // Fetch usedStorage for each model in parallel seamlessly without throwing
+                await withTaskGroup(of: (Int, Int64?).self) { group in
                     for i in 0..<page.count {
+                        let safeModelId = page[i].id
                         group.addTask {
-                            let detailUrl = URL(string: "https://huggingface.co/api/models/\(page[i].id)")!
-                            let (detailData, _) = try await URLSession.shared.data(from: detailUrl)
-                            
-                            struct HFFullDetails: Decodable {
-                                let usedStorage: Int64?
+                            let detailUrl = URL(string: "https://huggingface.co/api/models/\(safeModelId)")!
+                            do {
+                                let (detailData, response) = try await URLSession.shared.data(from: detailUrl)
+                                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                                    return (i, nil)
+                                }
+                                struct HFFullDetails: Decodable { let usedStorage: Int64? }
+                                let details = try? JSONDecoder().decode(HFFullDetails.self, from: detailData)
+                                return (i, details?.usedStorage)
+                            } catch {
+                                return (i, nil)
                             }
-                            
-                            let details = try? JSONDecoder().decode(HFFullDetails.self, from: detailData)
-                            return (i, details?.usedStorage)
                         }
                     }
                     
-                    for try await (index, size) in group {
+                    for await (index, size) in group {
                         if let size = size {
                             page[index].usedStorage = size
                         }
