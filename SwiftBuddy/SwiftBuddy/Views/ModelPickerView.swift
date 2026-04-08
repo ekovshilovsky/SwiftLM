@@ -405,10 +405,24 @@ struct HFSearchTab: View {
 private struct HFModelRow: View {
     let model: HFModelResult
     let onSelect: (String) -> Void
+    
+    @EnvironmentObject private var engine: InferenceEngine
+    @State private var pendingLoad = false
+    
+    private var downloadManager: ModelDownloadManager { engine.downloadManager }
+    private var isDownloaded: Bool { downloadManager.isDownloaded(model.id) }
+    private var activeProgress: ModelDownloadProgress? { downloadManager.activeDownloads[model.id] }
 
     var body: some View {
         Button {
-            onSelect(model.id)
+            if isDownloaded {
+                onSelect(model.id)
+            } else if activeProgress == nil {
+                pendingLoad = true
+                Task {
+                    _ = downloadManager.startDownload(modelId: model.id)
+                }
+            }
         } label: {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -438,6 +452,18 @@ private struct HFModelRow: View {
                             badge(storage, color: .gray)
                         }
                     }
+                    
+                    if let progress = activeProgress {
+                        ProgressView(value: progress.fractionCompleted)
+                            .tint(.blue)
+                            .padding(.vertical, 2)
+                        
+                        if let speed = progress.speedMBps {
+                            Text(String(format: "%.1f MB/s", speed))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
 
                 Spacer()
@@ -453,15 +479,34 @@ private struct HFModelRow: View {
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.pink)
                     }
-                    Image(systemName: "arrow.down.circle")
-                        .font(.title3)
-                        .foregroundStyle(.blue)
+                    
+                    if isDownloaded {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(.green)
+                            .padding(.top, 2)
+                    } else if activeProgress != nil {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(.top, 2)
+                    } else {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.title3)
+                            .foregroundStyle(.blue)
+                            .padding(.top, 2)
+                    }
                 }
             }
             .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onChange(of: isDownloaded) { _, newValue in
+            if newValue && pendingLoad {
+                pendingLoad = false
+                onSelect(model.id)
+            }
+        }
     }
 
     private func badge(_ label: String, color: Color) -> some View {
