@@ -1,5 +1,6 @@
 // ChatView.swift — Premium chat interface (iOS + macOS)
 import SwiftUI
+import SwiftData
 #if canImport(MLXInferenceCore)
 import MLXInferenceCore
 #endif
@@ -7,6 +8,7 @@ import MLXInferenceCore
 struct ChatView: View {
     @ObservedObject var viewModel: ChatViewModel
     @EnvironmentObject private var engine: InferenceEngine
+    @Query(sort: \PalaceWing.createdDate) var wings: [PalaceWing]
 
     // macOS-only sheet control (iOS: these are tabs)
     var showSettings: Binding<Bool>? = nil
@@ -376,6 +378,20 @@ struct ChatView: View {
                 .transition(.opacity)
             }
         }
+        // Persona map selector
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button("No Persona") { viewModel.currentWing = nil }
+                Divider()
+                ForEach(wings) { wing in
+                    Button(wing.name) { viewModel.currentWing = wing.name }
+                }
+            } label: {
+                Image(systemName: viewModel.currentWing == nil ? "brain" : "brain.head.profile")
+                    .foregroundStyle(viewModel.currentWing == nil ? SwiftBuddyTheme.textSecondary : .orange)
+            }
+        }
+        
         // New conversation
         ToolbarItem(placement: .topBarTrailing) {
             Button { viewModel.newConversation() } label: {
@@ -411,6 +427,19 @@ struct ChatView: View {
     #if os(macOS)
     @ToolbarContentBuilder
     private var macOSToolbar: some ToolbarContent {
+        ToolbarItem {
+            Menu {
+                Button("No Persona") { viewModel.currentWing = nil }
+                Divider()
+                ForEach(wings) { wing in
+                    Button(wing.name) { viewModel.currentWing = wing.name }
+                }
+            } label: {
+                Image(systemName: viewModel.currentWing == nil ? "brain" : "brain.head.profile")
+                    .foregroundStyle(viewModel.currentWing == nil ? SwiftBuddyTheme.textSecondary : .orange)
+            }
+        }
+        
         ToolbarItem {
             Button { viewModel.newConversation() } label: {
                 Label("New Chat", systemImage: "square.and.pencil")
