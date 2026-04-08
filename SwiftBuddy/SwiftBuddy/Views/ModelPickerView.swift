@@ -313,22 +313,21 @@ struct HFSearchTab: View {
                 }
                 Spacer()
             } else {
-                List {
-                    ForEach(service.results) { model in
-                        HFModelRow(model: model, onSelect: onSelect)
-                    }
-                    if service.hasMore {
-                        HStack {
-                            Spacer()
+                ScrollView {
+                    LazyVStack(spacing: 16) {
+                        ForEach(service.results) { model in
+                            HFModelRow(model: model, onSelect: onSelect)
+                            Divider()
+                        }
+                        if service.hasMore {
                             Button("Load More") { service.loadMore() }
                                 .buttonStyle(.borderedProminent)
                                 .controlSize(.small)
-                            Spacer()
+                                .padding(.top, 4)
                         }
-                        .listRowSeparator(.hidden)
                     }
+                    .padding()
                 }
-                .listStyle(.inset)
                 .overlay(alignment: .bottom) {
                     if service.isSearching {
                         HStack(spacing: 6) {
