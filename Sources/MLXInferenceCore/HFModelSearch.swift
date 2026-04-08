@@ -95,6 +95,42 @@ public enum HFSortOption: String, CaseIterable, Sendable {
     }
 }
 
+// MARK: — Size Filter
+
+public enum HFSizeFilter: CaseIterable, Sendable, Equatable {
+    case under0_5B, under1B, under3B, under7B, under13B, under32B, all
+
+    public var label: String {
+        switch self {
+        case .under0_5B: return "≤0.5B"
+        case .under1B: return "≤1B"
+        case .under3B: return "≤3B"
+        case .under7B: return "≤7B"
+        case .under13B: return "≤13B"
+        case .under32B: return "≤32B"
+        case .all: return "All"
+        }
+    }
+
+    public func matches(_ paramSizeText: String?) -> Bool {
+        if self == .all { return true }
+        guard let sizeStr = paramSizeText?.lowercased().replacingOccurrences(of: "b", with: ""),
+              let size = Double(sizeStr) else {
+            return false // Best effort: Hide models with unknown sizes when tightly filtering
+        }
+        
+        switch self {
+        case .under0_5B: return size <= 0.6
+        case .under1B: return size <= 1.5 // Grace margin for 1.3B etc.
+        case .under3B: return size <= 3.8 // Grace margin for 3.5B etc.
+        case .under7B: return size <= 7.5
+        case .under13B: return size <= 14.0
+        case .under32B: return size <= 33.0
+        case .all: return true
+        }
+    }
+}
+
 // MARK: — HFModelSearchService
 
 @MainActor
@@ -108,10 +144,13 @@ public final class HFModelSearchService: ObservableObject {
     @Published public var strictMLX: Bool = true
 
     private let hfBase = "https://huggingface.co/api/models"
+    private let maxFetchTries = 3
     private let pageSize = 20
+    
     private var currentOffset = 0
     private var currentQuery = ""
     private var currentSort = HFSortOption.trending
+    private var currentSizeFilter = HFSizeFilter.all
     private var debounceTask: Task<Void, Never>? = nil
 
     private init() {}
@@ -119,7 +158,7 @@ public final class HFModelSearchService: ObservableObject {
     // MARK: — Public API
 
     /// Debounced search — safe to call on every keystroke.
-    public func search(query: String, sort: HFSortOption = .trending) {
+    public func search(query: String, sort: HFSortOption = .trending, sizeFilter: HFSizeFilter = .all) {
         debounceTask?.cancel()
         debounceTask = Task {
             // 300ms debounce
@@ -127,6 +166,7 @@ public final class HFModelSearchService: ObservableObject {
             guard !Task.isCancelled else { return }
             currentQuery = query
             currentSort  = sort
+            currentSizeFilter = sizeFilter
             currentOffset = 0
             results = []
             await fetchPage()
@@ -146,95 +186,92 @@ public final class HFModelSearchService: ObservableObject {
         isSearching = true
         errorMessage = nil
 
-        var finalQuery = currentQuery
-        if !strictMLX && !finalQuery.lowercased().contains("mlx") && !finalQuery.isEmpty {
-            finalQuery = finalQuery + " mlx"
-        }
+        var localResults: [HFModelResult] = []
+        var tries = 0
 
-        var components = URLComponents(string: hfBase)!
-        var queryItems: [URLQueryItem] = [
-            URLQueryItem(name: "pipeline_tag", value: "text-generation"),
-            URLQueryItem(name: "sort",         value: currentSort.rawValue),
-            URLQueryItem(name: "limit",        value: "\(pageSize)"),
-            URLQueryItem(name: "offset",       value: "\(currentOffset)"),
-            URLQueryItem(name: "full",         value: "false"),
-        ]
-        if !finalQuery.isEmpty {
-            queryItems.append(URLQueryItem(name: "search", value: finalQuery))
-        }
-        if strictMLX {
-            queryItems.append(URLQueryItem(name: "library", value: "mlx"))
-        }
-        components.queryItems = queryItems
+        while localResults.count < 10 && tries < maxFetchTries {
+            tries += 1
 
-        guard let url = components.url else {
-            print("HFSearch: Failed to build URL")
-            isSearching = false
-            return
-        }
-
-        print("HFSearch: Fetching from url: \(url.absoluteString)")
-
-        do {
-            let (data, response) = try await URLSession.shared.data(from: url)
-            guard let http = response as? HTTPURLResponse else {
-                print("HFSearch: Response was not HTTPURLResponse")
-                errorMessage = "HuggingFace search unavailable"
-                isSearching = false
-                return
+            var finalQuery = currentQuery
+            if !strictMLX && !finalQuery.lowercased().contains("mlx") && !finalQuery.isEmpty {
+                finalQuery = finalQuery + " mlx"
             }
-            print("HFSearch: Response status code: \(http.statusCode)")
-            if http.statusCode != 200 {
-                errorMessage = "HuggingFace API returned \(http.statusCode)"
-                isSearching = false
-                return
+
+            var components = URLComponents(string: hfBase)!
+            var queryItems: [URLQueryItem] = [
+                URLQueryItem(name: "pipeline_tag", value: "text-generation"),
+                URLQueryItem(name: "sort",         value: currentSort.rawValue),
+                URLQueryItem(name: "limit",        value: "\(pageSize)"),
+                URLQueryItem(name: "offset",       value: "\(currentOffset)"),
+                URLQueryItem(name: "full",         value: "false"),
+            ]
+            if !finalQuery.isEmpty {
+                queryItems.append(URLQueryItem(name: "search", value: finalQuery))
             }
+            if strictMLX {
+                queryItems.append(URLQueryItem(name: "library", value: "mlx"))
+            }
+            components.queryItems = queryItems
+
+            guard let url = components.url else { break }
             
             do {
-                var page = try JSONDecoder().decode([HFModelResult].self, from: data)
-                print("HFSearch: Decoded \(page.count) models. Fetching storage sizes...")
-                
-                // Fetch usedStorage for each model in parallel seamlessly without throwing
-                await withTaskGroup(of: (Int, Int64?).self) { group in
-                    for i in 0..<page.count {
-                        let safeModelId = page[i].id
-                        group.addTask {
-                            let detailUrl = URL(string: "https://huggingface.co/api/models/\(safeModelId)")!
-                            do {
-                                let (detailData, response) = try await URLSession.shared.data(from: detailUrl)
-                                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                                    return (i, nil)
-                                }
-                                struct HFFullDetails: Decodable { let usedStorage: Int64? }
-                                let details = try? JSONDecoder().decode(HFFullDetails.self, from: detailData)
-                                return (i, details?.usedStorage)
-                            } catch {
-                                return (i, nil)
-                            }
-                        }
-                    }
-                    
-                    for await (index, size) in group {
-                        if let size = size {
-                            page[index].usedStorage = size
-                        }
-                    }
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                    errorMessage = "HuggingFace API unavailable"
+                    break
                 }
                 
-                results.append(contentsOf: page)
-                hasMore = page.count == pageSize
-                currentOffset += page.count
+                var page = try JSONDecoder().decode([HFModelResult].self, from: data)
+                let originalPageCount = page.count
+                currentOffset += originalPageCount
+
+                // Local Size Filtering
+                if currentSizeFilter != .all {
+                    page = page.filter { currentSizeFilter.matches($0.paramSizeHint) }
+                }
+
+                if !page.isEmpty {
+                    // Fetch usedStorage for each matched model seamlessly without throwing
+                    await withTaskGroup(of: (Int, Int64?).self) { group in
+                        for i in 0..<page.count {
+                            let safeModelId = page[i].id
+                            group.addTask {
+                                let detailUrl = URL(string: "https://huggingface.co/api/models/\(safeModelId)")!
+                                do {
+                                    let (detailData, detailResp) = try await URLSession.shared.data(from: detailUrl)
+                                    guard let httpD = detailResp as? HTTPURLResponse, httpD.statusCode == 200 else { return (i, nil) }
+                                    struct HFFullDetails: Decodable { let usedStorage: Int64? }
+                                    let details = try? JSONDecoder().decode(HFFullDetails.self, from: detailData)
+                                    return (i, details?.usedStorage)
+                                } catch { return (i, nil) }
+                            }
+                        }
+                        for await (index, size) in group {
+                            if let size = size { page[index].usedStorage = size }
+                        }
+                    }
+                    localResults.append(contentsOf: page)
+                }
+
+                if originalPageCount < pageSize {
+                    hasMore = false
+                    break // end of HF pagination
+                } else {
+                    hasMore = true
+                }
+            } catch is CancellationError {
+                break
             } catch {
-                print("HFSearch: Decode error: \(error)")
-                errorMessage = "Decode error: \(error.localizedDescription)"
+                errorMessage = "Search failed: \(error.localizedDescription)"
+                break
             }
-        } catch is CancellationError {
-            print("HFSearch: Task was cancelled")
-        } catch {
-            print("HFSearch: URLSession threw error: \(error)")
-            errorMessage = "Search failed: \(error.localizedDescription)"
         }
 
+        if !localResults.isEmpty {
+            results.append(contentsOf: localResults)
+        }
+        
         isSearching = false
         print("HFSearch: fetchPage finished")
     }

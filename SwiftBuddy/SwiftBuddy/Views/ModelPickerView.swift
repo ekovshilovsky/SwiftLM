@@ -222,6 +222,7 @@ struct HFSearchTab: View {
     @ObservedObject private var service = HFModelSearchService.shared
     @State private var query = ""
     @State private var sort = HFSortOption.trending
+    @State private var sizeFilter = HFSizeFilter.all
 
     var body: some View {
         VStack(spacing: 0) {
@@ -250,7 +251,7 @@ struct HFSearchTab: View {
                     .toggleStyle(.switch)
                     .padding(.horizontal, 4)
                     .onChange(of: service.strictMLX) { _, _ in
-                        service.search(query: query, sort: sort)
+                        service.search(query: query, sort: sort, sizeFilter: sizeFilter)
                     }
 
                 // ─────────────────────────────────────────────────────────────
@@ -260,7 +261,7 @@ struct HFSearchTab: View {
                         ForEach(HFSortOption.allCases, id: \.self) { option in
                             Button {
                                 sort = option
-                                service.search(query: query, sort: sort)
+                                service.search(query: query, sort: sort, sizeFilter: sizeFilter)
                             } label: {
                                 Text(option.label)
                                     .font(.caption.weight(.medium))
@@ -276,10 +277,39 @@ struct HFSearchTab: View {
                         }
                     }
                 }
+
+                // Size filter segmented bar
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(HFSizeFilter.allCases, id: \.self) { filter in
+                            Button {
+                                sizeFilter = filter
+                                service.search(query: query, sort: sort, sizeFilter: sizeFilter)
+                            } label: {
+                                Text(filter.label)
+                                    .font(.caption.weight(.medium))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(
+                                        sizeFilter == filter ? Color.accentColor.opacity(0.2) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 6)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(sizeFilter == filter ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
+                                    )
+                                    .foregroundStyle(sizeFilter == filter ? Color.accentColor : .secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(3)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                }
             }
             .padding(.horizontal)
             .padding(.bottom, 8)
-
+            
             Divider()
 
             // ── Results ────────────────────────────────────────────────────
@@ -342,11 +372,11 @@ struct HFSearchTab: View {
             }
         }
         .onChange(of: query) { _, newValue in
-            service.search(query: newValue, sort: sort)
+            service.search(query: newValue, sort: sort, sizeFilter: sizeFilter)
         }
         .onAppear {
             if service.results.isEmpty {
-                service.search(query: "", sort: sort)
+                service.search(query: "", sort: sort, sizeFilter: sizeFilter)
             }
         }
     }
