@@ -219,7 +219,7 @@ private struct CatalogTab: View {
 struct HFSearchTab: View {
     let onSelect: (String) -> Void
 
-    @StateObject private var service = HFModelSearchService.shared
+    @ObservedObject private var service = HFModelSearchService.shared
     @State private var query = ""
     @State private var sort = HFSortOption.trending
 
