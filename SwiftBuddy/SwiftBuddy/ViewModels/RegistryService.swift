@@ -28,7 +28,7 @@ public final class RegistryService: ObservableObject {
         isSyncing = true
         lastSyncLog = "Fetching cloud registry..."
         
-        let manifestUrl = repoBaseUrl + "/persona.json"
+        let manifestUrl = repoBaseUrl + "/persona.json?_t=\(Date().timeIntervalSince1970)"
         print("[RegistryService] fetchAvailablePersonas started. URL: \(manifestUrl)")
         
         guard let url = URL(string: manifestUrl) else { 
@@ -38,6 +38,7 @@ public final class RegistryService: ObservableObject {
         }
         
         var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("SwiftBuddy-macOS/1.0", forHTTPHeaderField: "User-Agent")
         
         do {
@@ -108,12 +109,13 @@ public final class RegistryService: ObservableObject {
         
         for roomFile in rooms {
             let roomName = roomFile.replacingOccurrences(of: ".txt", with: "")
-            let targetUrl = repoBaseUrl + "/personas/\(name)/\(roomFile)"
+            let targetUrl = repoBaseUrl + "/personas/\(name)/\(roomFile)?_t=\(Date().timeIntervalSince1970)"
             guard let url = URL(string: targetUrl) else { continue }
             
             lastSyncLog = "Fetching \(roomName)..."
             
             var request = URLRequest(url: url)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
             request.setValue("SwiftBuddy-macOS/1.0", forHTTPHeaderField: "User-Agent")
             
             do {
