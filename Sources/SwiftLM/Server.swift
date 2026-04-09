@@ -243,6 +243,9 @@ struct MLXServer: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable SSD expert streaming for MoE models (Flash-MoE style memory-mapping)")
     var streamExperts: Bool = false
 
+    @Flag(name: .long, help: "Enable 16-worker background SSD thread pool queue (PAPPS). Requires --stream-experts.")
+    var ssdPrefetch: Bool = false
+
     @Flag(name: .long, help: "Enable TurboQuant KV-cache compression (3-bit PolarQuant+QJL). Compresses KV history > 8192 tokens to ~3.5 bits/token — recommended for 100k+ context. Default: disabled")
     var turboKV: Bool = false
 
@@ -428,6 +431,10 @@ struct MLXServer: AsyncParsableCommand {
             let streamingEnabled = await container.setStreamExperts(true)
             if streamingEnabled {
                 print("[SwiftLM] 💾 SSD Expert Streaming enabled (lazy load + layer-sync)")
+                if self.ssdPrefetch {
+                    MLXFast.setPrefetchEnabled(true)
+                    print("[SwiftLM] 🚀 PAPPS 16-Worker Thread Pool prefetcher enabled!")
+                }
             } else {
                 print("[SwiftLM] ⚠️  Model does not support SSD expert streaming")
             }
@@ -513,7 +520,7 @@ struct MLXServer: AsyncParsableCommand {
 
         // Health (enhanced v3 with memory + stats + partition plan)
         let isSSDStream = self.streamExperts  // capture before escaping closure
-        router.get("/health") { _, _ -> Response in
+        router.get("/health") { [partitionPlan] _, _ -> Response in
             let activeMemMB = Memory.activeMemory / (1024 * 1024)
             let peakMemMB = Memory.peakMemory / (1024 * 1024)
             let cacheMemMB = Memory.cacheMemory / (1024 * 1024)
@@ -524,7 +531,7 @@ struct MLXServer: AsyncParsableCommand {
             var partitionJson = ""
             if let plan = partitionPlan {
                 let isSSD = isSSDStream
-                var pData: [String: Any] = [
+                let pData: [String: Any] = [
                     "strategy": isSSD ? "ssd_streaming" : plan.strategy.rawValue,
                     "overcommit_ratio": round(plan.overcommitRatio * 100) / 100,
                     "model_weight_gb": round(plan.weightMemoryGB * 10) / 10,
@@ -681,7 +688,7 @@ struct MLXServer: AsyncParsableCommand {
             "engine": "mlx",
             "vision": isVision
         ]
-        if var plan = partitionPlan {
+        if let plan = partitionPlan {
             var info = plan.healthInfo
             if self.streamExperts {
                 // SSD streaming bypasses swap — report accurate strategy and suppress swap estimate
@@ -2248,14 +2255,14 @@ struct AnyCodable: @unchecked Sendable {
 
     static func toSendable(_ dict: [String: AnyCodable]?) -> [String: any Sendable]? {
         guard let dict else { return nil }
-        return dict.mapValues { $0.value as! any Sendable }
+        return dict.mapValues { $0.value as any Sendable }
     }
 }
 
 extension AnyCodable: Decodable {
     init(from decoder: Swift.Decoder) throws {
         let c = try decoder.singleValueContainer()
-        if (try? c.decodeNil()) == true { value = NSNull(); return }
+        if c.decodeNil() { value = NSNull(); return }
         if let b = try? c.decode(Bool.self)   { value = b; return }
         if let i = try? c.decode(Int.self)    { value = i; return }
         if let d = try? c.decode(Double.self) { value = d; return }

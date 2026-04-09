@@ -1,4 +1,4 @@
-name: E2E Tests
+name: CI Pipeline
 
 on:
   push:
@@ -7,23 +7,27 @@ on:
     branches: [main]
 
 concurrency:
-  group: e2e-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  e2e:
+  ci:
     runs-on: macos-15
-    timeout-minutes: 30
-
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      - name: Install Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain || true
+
       - name: Cache Swift packages
         uses: actions/cache@v4
         with:
           path: .build
+          # Key includes product name so any rename (e.g. mlx-server→SwiftLM)
+          # automatically busts the cache and prevents stale PCH errors.
           key: ${{ runner.os }}-spm-SwiftLM-v2-${{ hashFiles('Package.resolved') }}
           restore-keys: |
             ${{ runner.os }}-spm-SwiftLM-v2-
@@ -33,29 +37,48 @@ jobs:
         # but the path is currently '…SwiftLM…'" after repo rename.
         run: find .build -type d -name ModuleCache -exec rm -rf {} + 2>/dev/null || true
 
+      - name: Resolve dependencies
+        run: swift package resolve
+
       - name: Build (Release)
         run: swift build -c release
+
+      - name: Verify binary
+        run: |
+          ls -lh .build/release/SwiftLM
+          file .build/release/SwiftLM
+
+      - name: TurboQuant unit tests
+        run: |
+          # Compile and run standalone C++ unit tests for the TurboQuant
+          # KV cache compression algorithm (ported from TheTom/llama-cpp-turboquant).
+          # Tests: centroids, WHT self-inverse, rotation orthogonality,
+          #        3-bit pack/unpack, V-cache SNR, K-cache IP SNR, fp16 round-trip.
+          clang++ -std=c++17 -O2 -o /tmp/tq_test tests/test_turbo_quant.cpp
+          /tmp/tq_test
+
+      - name: Build Test Harness
+        run: swift build --build-tests
 
       - name: Install MLX Metal library
         run: |
           python3 -m venv /tmp/mlx_venv
           /tmp/mlx_venv/bin/pip install --quiet mlx
+          
+          # Inject metallib for production e2e runner
           cp /tmp/mlx_venv/lib/python*/site-packages/mlx/lib/mlx.metallib .build/release/
+          
+          # Distribute metallib exclusively to XCTest bundles so it satisfies memory.cpp current_binary_dir() constraints natively.
+          find .build -type d -name "MacOS" -exec cp /tmp/mlx_venv/lib/python*/site-packages/mlx/lib/mlx.metallib {}/ \;
+
+      - name: SwiftBuddy Tests (MemPalace & Lifecycle)
+        run: swift test --skip-build --filter SwiftBuddyTests
 
       - name: Cache MLX model
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
           key: mlx-model-qwen2.5-0.5b-4bit
-
-      - name: TurboQuant unit tests
-        run: |
-          # Fast pre-flight: verify compression math before expensive model download.
-          # Tests: Lloyd-Max centroids, WHT correctness, rotation orthogonality,
-          #        3-bit pack/unpack, V-cache SNR (14.6 dB), K-cache IP SNR (13.7 dB), fp16.
-          # No external deps — compiles standalone with clang++.
-          clang++ -std=c++17 -O2 -o /tmp/tq_test tests/test_turbo_quant.cpp
-          /tmp/tq_test
 
       - name: Run E2E tests
         env:
@@ -80,6 +103,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-test-logs
+          name: ci-test-logs
           path: /tmp/SwiftLM-test-*.log
           retention-days: 7

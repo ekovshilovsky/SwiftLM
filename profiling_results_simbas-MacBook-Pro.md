@@ -1,4 +1,4 @@
-### `mlx-community/GLM-5.1-4bit` — Context & Memory Profile
+### `baa-ai/GLM-5.1-RAM-270GB-MLX` — Context & Memory Profile
 
 Context depths tested: 512,40000,100000
 
