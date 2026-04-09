@@ -7,8 +7,7 @@ let package = Package(
     products: [
         .library(name: "MLXInferenceCore", targets: ["MLXInferenceCore"]),
         .executable(name: "SwiftLM", targets: ["SwiftLM"]),
-        .executable(name: "SwiftBuddy", targets: ["SwiftBuddy"]),
-        .executable(name: "TestE2E", targets: ["TestE2E"])
+        .executable(name: "SwiftBuddy", targets: ["SwiftBuddy"])
     ],
     dependencies: [
         // Local Apple MLX Swift fork for C++ extensions
@@ -40,14 +39,7 @@ let package = Package(
             ],
             path: "Sources/SwiftLM"
         ),
-        // ── CLI Test E2E ────────────────────────────────────────────
-        .executableTarget(
-            name: "TestE2E",
-            dependencies: [
-                "MLXInferenceCore"
-            ],
-            path: "Sources/TestE2E"
-        ),
+
         // ── macOS GUI App (SwiftBuddy) ──────────────────────────────
         .executableTarget(
             name: "SwiftBuddy",

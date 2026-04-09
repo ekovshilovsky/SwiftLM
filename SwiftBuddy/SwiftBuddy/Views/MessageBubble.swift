@@ -77,7 +77,15 @@ struct MessageBubble: View {
             .padding(.top, 14)
             
             // Explicit System Cleanups (don't show the injected context matrix to the user!)
-            let cleanText = isUser ? message.content.replacingOccurrences(of: "SYSTEM DIRECTIVE & CONTEXT:(.*?)USER PROMPT:\\n", with: "", options: .regularExpression) : message.content
+            let cleanText: String = {
+                var text = isUser ? message.content.replacingOccurrences(of: "SYSTEM DIRECTIVE & CONTEXT:(.*?)USER PROMPT:\\n", with: "", options: .regularExpression) : message.content
+                if isUser {
+                    if let range = text.range(of: "\\n\\n\\[RELEVANT MEMORY CONTEXT FOR THIS TURN\\]:", options: .regularExpression) {
+                        text = String(text[..<range.lowerBound])
+                    }
+                }
+                return text
+            }()
             
             // Body Text
             VStack(alignment: .leading, spacing: 6) {
@@ -324,7 +332,7 @@ private struct ThinkingPanel: View {
                     Image(systemName: "brain.filled.head.profile")
                         .font(.caption)
                         .foregroundStyle(SwiftBuddyTheme.accentSecondary)
-                    Text("Thinking…")
+                    Text(isExpanded ? "Thinking…" : "Thought")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(SwiftBuddyTheme.accentSecondary)
                     Spacer()
