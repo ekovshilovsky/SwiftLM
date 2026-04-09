@@ -57,14 +57,14 @@ jobs:
           clang++ -std=c++17 -O2 -o /tmp/tq_test tests/test_turbo_quant.cpp
           /tmp/tq_test
 
-      - name: SwiftBuddy Tests (MemPalace & Lifecycle)
-        run: swift test --filter SwiftBuddyTests
-
       - name: Install MLX Metal library
         run: |
           python3 -m venv /tmp/mlx_venv
           /tmp/mlx_venv/bin/pip install --quiet mlx
           cp /tmp/mlx_venv/lib/python*/site-packages/mlx/lib/mlx.metallib .build/release/
+
+      - name: SwiftBuddy Tests (MemPalace & Lifecycle)
+        run: MLX_METAL_PATH=$PWD/.build/release/mlx.metallib swift test -c release --filter SwiftBuddyTests
 
       - name: Cache MLX model
         uses: actions/cache@v4
