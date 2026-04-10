@@ -9,7 +9,7 @@ set -euo pipefail
 BINARY="${1:-.build/release/SwiftLM}"
 PORT="${2:-15413}"
 HOST="127.0.0.1"
-MODEL="mlx-community/Qwen2-Audio-7B-Instruct" # CI Small ALM
+MODEL="mlx-community/Qwen2-Audio-7B-Instruct-4bit" # CI Small ALM
 URL="http://${HOST}:${PORT}"
 PASS=0
 FAIL=0
