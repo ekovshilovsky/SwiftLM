@@ -35,7 +35,7 @@ if [ "$suite_opt" == "0" ]; then
             MODEL=$(python3 scripts/hf_discovery.py "mlx-community/Qwen VL Instruct 4bit" || echo "mlx-community/Qwen2-VL-2B-Instruct-4bit")
         fi
         if [ "$TEST_ID" == "5" ]; then
-            MODEL=$(python3 scripts/hf_discovery.py "mlx-community/gemma it 8bit" || echo "gemma-4-e4b-it-8bit")
+            MODEL=$(python3 scripts/hf_discovery.py "mlx-community/Qwen Audio Instruct" || echo "mlx-community/Qwen2-Audio-7B-Instruct")
         fi
         
         echo -e "$TEST_ID\n11\n$MODEL" | ./run_benchmark.sh
