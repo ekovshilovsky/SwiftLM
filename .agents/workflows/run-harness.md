@@ -41,11 +41,16 @@ This workflow executes the persistent TDD harness defined in `.agents/harness/`.
 
 // turbo-all
 7. Run the test suite:
-   ```
+   ```bash
    swift test --filter SwiftBuddyTests
    ```
 
-8. Write a timestamped run log to the appropriate `runs/` directory.
+8. Validate VLM pipeline with real-world End-to-End processing:
+   ```bash
+   echo -e "4\n11\nmlx-community/Qwen2-VL-2B-Instruct-4bit" | ./run_benchmark.sh
+   ```
 
-9. Report completion: list all features with their final status.
+9. Write a timestamped run log to the appropriate `runs/` directory detailing the status and test output.
+
+10. Report completion: list all features with their final status.
 
