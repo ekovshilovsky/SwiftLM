@@ -18,13 +18,13 @@ SwiftLM must reliably load VLM models, parse multimodal image+text requests via 
 | # | Feature | Status | Test | Last Verified |
 |---|---------|--------|------|---------------|
 | 1 | `--vision` flag loads VLM instead of LLM | ✅ DONE | `testVLM_VisionFlagLoadsVLMFactory` | 2026-04-10 |
-| 2 | Base64 data URI image extraction from multipart content | 🔲 TODO | `testVLM_Base64ImageExtraction` | — |
-| 3 | HTTP URL image extraction from multipart content | 🔲 TODO | `testVLM_HTTPURLImageExtraction` | — |
+| 2 | Base64 data URI image extraction from multipart content | ✅ DONE | `testVLM_Base64ImageExtraction` | 2026-04-10 |
+| 3 | HTTP URL image extraction from multipart content | ✅ DONE | `testVLM_HTTPURLImageExtraction` | 2026-04-10 |
 | 4 | Reject request with no image when model requires one | 🔲 TODO | `testVLM_RejectMissingImage` | — |
 | 5 | Text-only fallback when VLM receives no image | 🔲 TODO | `testVLM_TextOnlyFallback` | — |
 | 6 | Valid JSON response from Qwen2-VL with real image | 🔲 TODO | `testVLM_Qwen2VLEndToEnd` | — |
 | 7 | Image too small for ViT patch size returns graceful error | 🔲 TODO | `testVLM_ImageTooSmallError` | — |
-| 8 | Multiple images in single message are all processed | 🔲 TODO | `testVLM_MultipleImagesInMessage` | — |
+| 8 | Multiple images in single message are all processed | ✅ DONE | `testVLM_MultipleImagesInMessage` | 2026-04-10 |
 | 9 | VLM model type registry covers all 14 supported types | ✅ DONE | `testVLM_TypeRegistryCompleteness` | 2026-04-10 |
 | 10 | VLM processor type registry covers all 14 supported types | ✅ DONE | `testVLM_ProcessorRegistryCompleteness` | 2026-04-10 |
 | 11 | Unsupported model_type returns clear error (not crash) | ✅ DONE | `testVLM_UnsupportedModelType` | 2026-04-10 |
