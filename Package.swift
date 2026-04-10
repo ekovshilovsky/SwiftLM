@@ -48,7 +48,12 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
             ],
-            path: "SwiftBuddy/SwiftBuddy"
+            path: "SwiftBuddy/SwiftBuddy",
+            exclude: [
+                "Assets.xcassets",
+                "SwiftBuddy.entitlements",
+                "Personas/Lumina.json"
+            ]
         ),
         // ── Shared inference library for SwiftLM Chat (iOS + macOS) ──
         .target(

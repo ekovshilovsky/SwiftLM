@@ -21,6 +21,10 @@ import MLXLMCommon
 import MLXVLM
 import Tokenizers
 
+extension LMInput: @retroactive @unchecked Sendable {}
+extension MLXLMCommon.LMInput.Text: @retroactive @unchecked Sendable {}
+extension MLXLMCommon.LMInput.ProcessedImage: @retroactive @unchecked Sendable {}
+
 // ── Hub/Tokenizer bridges (Downloader + TokenizerLoader conformances) ─────────
 
 private struct HubDownloader: Downloader, Sendable {
