@@ -20,9 +20,9 @@ SwiftLM currently has zero audio support. This harness defines the TDD contract 
 
 | # | Feature | Status | Test | Last Verified |
 |---|---------|--------|------|---------------|
-| 1 | `--audio` CLI flag is accepted without crash | 🔲 TODO | `testAudio_AudioFlagAccepted` | — |
-| 2 | Base64 WAV data URI extraction from API content | 🔲 TODO | `testAudio_Base64WAVExtraction` | — |
-| 3 | WAV header parsing: extract sample rate, channels, bit depth | 🔲 TODO | `testAudio_WAVHeaderParsing` | — |
+| 1 | `--audio` CLI flag is accepted without crash | ✅ DONE | `testAudio_AudioFlagAccepted` | 2026-04-10 |
+| 2 | Base64 WAV data URI extraction from API content | ✅ DONE | `testAudio_Base64WAVExtraction` | 2026-04-10 |
+| 3 | WAV header parsing: extract sample rate, channels, bit depth | ✅ DONE | `testAudio_WAVHeaderParsing` | 2026-04-10 |
 | 4 | PCM samples → mel spectrogram via FFT | 🔲 TODO | `testAudio_MelSpectrogramGeneration` | — |
 | 5 | Mel spectrogram dimensions match Whisper's expected input (80 bins × N frames) | 🔲 TODO | `testAudio_MelDimensionsCorrect` | — |
 | 6 | Audio longer than 30s is chunked into segments | 🔲 TODO | `testAudio_LongAudioChunking` | — |

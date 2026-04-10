@@ -222,6 +222,9 @@ struct MLXServer: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable VLM (vision-language model) mode for image inputs")
     var vision: Bool = false
 
+    @Flag(name: .long, help: "Enable ALM (audio-language model) mode for audio inputs")
+    var audio: Bool = false
+
     @Option(name: .long, help: "GPU memory limit in MB (default: system limit)")
     var memLimit: Int?
 

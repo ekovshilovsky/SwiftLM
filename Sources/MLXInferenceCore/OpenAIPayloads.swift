@@ -69,6 +69,16 @@ public struct ChatCompletionRequest: Decodable {
             }
         }
 #endif
+
+        public func extractAudio() -> [Data] {
+            guard let content = content, case .parts(let parts) = content else { return [] }
+            return parts.compactMap { part -> Data? in
+                guard part.type == "input_audio", 
+                      let audio = part.inputAudio,
+                      audio.format == "wav" else { return nil }
+                return Data(base64Encoded: audio.data)
+            }
+        }
     }
 
     public enum MessageContent: Decodable {
@@ -91,16 +101,29 @@ public struct ChatCompletionRequest: Decodable {
         public let type: String
         public let text: String?
         public let imageUrl: ImageUrlContent?
+        public let inputAudio: InputAudioContent?
 
         enum CodingKeys: String, CodingKey {
             case type, text
             case imageUrl = "image_url"
+            case inputAudio = "input_audio"
         }
         
-        public init(type: String, text: String? = nil, imageUrl: ImageUrlContent? = nil) {
+        public init(type: String, text: String? = nil, imageUrl: ImageUrlContent? = nil, inputAudio: InputAudioContent? = nil) {
             self.type = type
             self.text = text
             self.imageUrl = imageUrl
+            self.inputAudio = inputAudio
+        }
+    }
+
+    public struct InputAudioContent: Decodable {
+        public let data: String
+        public let format: String
+        
+        public init(data: String, format: String) {
+            self.data = data
+            self.format = format
         }
     }
 
