@@ -1,21 +1,21 @@
 import Foundation
 import MLX
 
-public class ALMTypeRegistry {
+public actor ALMTypeRegistry {
     public static let shared = ALMTypeRegistry()
     
-    private var creators: [String: () -> Any] = [:]
+    private var creators: [String: @Sendable () -> Any] = [:]
     
     private init() {
         // Feature 8: Register Whisper
         register(creator: { WhisperModelCreator() }, for: "whisper")
     }
     
-    public func register(creator: @escaping () -> (Any), for key: String) {
+    public func register(creator: @escaping @Sendable () -> (Any), for key: String) {
         creators[key] = creator
     }
     
-    public func creator(for key: String) -> (() -> Any)? {
+    public func creator(for key: String) -> (@Sendable () -> Any)? {
         return creators[key]
     }
 }
