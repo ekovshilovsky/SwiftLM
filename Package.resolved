@@ -37,15 +37,6 @@
       }
     },
     {
-      "identity" : "mlx-swift-lm",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/SharpAI/mlx-swift-lm.git",
-      "state" : {
-        "branch" : "feature/papps-ssd-streaming",
-        "revision" : "325bfb22f4afc790e90bf4d95de70b0bfc63233d"
-      }
-    },
-    {
       "identity" : "swift-algorithms",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-algorithms.git",
