@@ -2342,16 +2342,19 @@ public struct ALMUserInputProcessor: UserInputProcessor, @unchecked Sendable {
     let configuration: ModelConfiguration
     let messageGenerator: MessageGenerator
     let fusionProcessor: MultimodalFusionProcessor
+    let numAudioEmbeddings: Int
 
     public init(
         tokenizer: any MLXLMCommon.Tokenizer, configuration: ModelConfiguration,
         messageGenerator: MessageGenerator,
-        boaToken: Int = 255010, eoaToken: Int = 255011
+        boaToken: Int = 255010, eoaToken: Int = 255011,
+        numAudioEmbeddings: Int = 128
     ) {
         self.tokenizer = tokenizer
         self.configuration = configuration
         self.messageGenerator = messageGenerator
         self.fusionProcessor = MultimodalFusionProcessor(boaToken: boaToken, eoaToken: eoaToken)
+        self.numAudioEmbeddings = numAudioEmbeddings
     }
 
     public func prepare(input: UserInput) throws -> LMInput {
@@ -2366,7 +2369,7 @@ public struct ALMUserInputProcessor: UserInputProcessor, @unchecked Sendable {
                 // Mock num audio embeddings for now - typically derived from the model or audio lengths
                 let rawSequence = fusionProcessor.interleave(
                     textTokens: promptTokensInt,
-                    numAudioEmbeddings: 128, // Placeholder
+                    numAudioEmbeddings: numAudioEmbeddings,
                     audioFirst: true
                 )
                 return LMInput(tokens: MLXArray(rawSequence))
@@ -2394,13 +2397,15 @@ public final class ALMModelFactory: ModelFactory, @unchecked Sendable {
     ) async throws -> ModelContext {
         let context = try await LLMModelFactory.shared._load(configuration: configuration, tokenizerLoader: tokenizerLoader)
         
+        let numAudioEmbeddings = OmniModelFactory.extractNumAudioEmbeddings(configuration: configuration)
         let messageGenerator = DefaultMessageGenerator()
         let processor = ALMUserInputProcessor(
             tokenizer: context.tokenizer,
             configuration: context.configuration,
             messageGenerator: messageGenerator,
             boaToken: 255010,
-            eoaToken: 255011
+            eoaToken: 255011,
+            numAudioEmbeddings: numAudioEmbeddings
         )
         
         return .init(
@@ -2415,10 +2420,12 @@ public final class ALMModelFactory: ModelFactory, @unchecked Sendable {
 public struct OmniUserInputProcessor: UserInputProcessor, @unchecked Sendable {
     let vlmProcessor: any UserInputProcessor
     let fusionProcessor: MultimodalFusionProcessor
+    let numAudioEmbeddings: Int
     
-    public init(vlmProcessor: any UserInputProcessor, boaToken: Int = 255010, eoaToken: Int = 255011) {
+    public init(vlmProcessor: any UserInputProcessor, boaToken: Int = 255010, eoaToken: Int = 255011, numAudioEmbeddings: Int = 128) {
         self.vlmProcessor = vlmProcessor
         self.fusionProcessor = MultimodalFusionProcessor(boaToken: boaToken, eoaToken: eoaToken)
+        self.numAudioEmbeddings = numAudioEmbeddings
     }
 
     public func prepare(input: UserInput) async throws -> LMInput {
@@ -2431,7 +2438,7 @@ public struct OmniUserInputProcessor: UserInputProcessor, @unchecked Sendable {
             print("[Omni] Interleaving Audio Tokens into VLM prompt structure.")
             let rawSequence = fusionProcessor.interleave(
                 textTokens: tokens,
-                numAudioEmbeddings: 128, // Placeholder until audio config extraction is available globally
+                numAudioEmbeddings: numAudioEmbeddings,
                 audioFirst: false // Append audio after vision context typically
             )
             return LMInput(text: .init(tokens: MLXArray(rawSequence)), image: vlmInput.image)
@@ -2453,7 +2460,11 @@ public final class OmniModelFactory: ModelFactory, @unchecked Sendable {
         tokenizerLoader: any TokenizerLoader
     ) async throws -> ModelContext {
         let vlmContext = try await VLMModelFactory.shared._load(configuration: configuration, tokenizerLoader: tokenizerLoader)
-        let omniProcessor = OmniUserInputProcessor(vlmProcessor: vlmContext.processor)
+        let numAudioEmbeddings = OmniModelFactory.extractNumAudioEmbeddings(configuration: configuration)
+        let omniProcessor = OmniUserInputProcessor(
+            vlmProcessor: vlmContext.processor,
+            numAudioEmbeddings: numAudioEmbeddings
+        )
         
         return .init(
             configuration: vlmContext.configuration,
@@ -2461,5 +2472,21 @@ public final class OmniModelFactory: ModelFactory, @unchecked Sendable {
             processor: omniProcessor,
             tokenizer: vlmContext.tokenizer
         )
+    }
+
+    public static func extractNumAudioEmbeddings(configuration: ResolvedModelConfiguration) -> Int {
+        let configurationURL = configuration.modelDirectory.appending(component: "config.json")
+        if let data = try? Data(contentsOf: configurationURL),
+           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            
+            if let subsampling = dict["subsampling_conv_channels"] as? [Int] {
+                return subsampling.first ?? 128
+            }
+            if let audioConfig = dict["audio_config"] as? [String: Any],
+               let embeddings = audioConfig["num_audio_embeddings"] as? Int {
+                return embeddings
+            }
+        }
+        return 128
     }
 }
