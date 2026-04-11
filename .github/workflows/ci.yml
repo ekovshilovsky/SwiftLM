@@ -76,7 +76,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        modality: [server, vision, audio]
+        modality: [server, vision, audio, graph]
     steps:
       - uses: actions/checkout@v4
         with:

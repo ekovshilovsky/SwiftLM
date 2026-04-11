@@ -39,6 +39,12 @@ This workflow executes the persistent TDD harness defined in `.agents/harness/`.
    - Load any relevant fixture files from `.agents/harness/audio/fixtures/`.
    - Follow the Agent Loop Protocol: write test → run → implement → verify → update status.
 
+7. **GraphPalace Harness**:
+   - Read `.agents/harness/graph-palace/features.md` to find all 🔲 TODO items.
+   - For each TODO, read the acceptance criteria in `.agents/harness/graph-palace/acceptance.md`.
+   - Load any relevant fixture files from `.agents/harness/graph-palace/fixtures/` if available.
+   - Follow the Agent Loop Protocol: write test → run → implement → verify → update status.
+
 // turbo-all
 7. Run the test suite:
    ```bash
