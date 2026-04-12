@@ -2,25 +2,26 @@ import Foundation
 
 /// Calculates memory budget for a given model + context configuration.
 /// Used at startup to validate the requested configuration fits in memory.
-struct MemoryCalculator {
+public struct MemoryCalculator {
 
-    struct Budget {
-        let weightMemoryBytes: UInt64
-        let kvCacheMemoryBytes: UInt64
-        let decodeWindowMemoryBytes: UInt64
-        let overheadBytes: UInt64
-        let totalBytes: UInt64
-        let availableBytes: UInt64
+    public struct Budget {
+        public let weightMemoryBytes: UInt64
+        public let kvCacheMemoryBytes: UInt64
+        public let decodeWindowMemoryBytes: UInt64
+        public let overheadBytes: UInt64
+        public let totalBytes: UInt64
+        public let availableBytes: UInt64
 
-        var fits: Bool { totalBytes <= availableBytes }
-        var utilizationPercent: Double {
+        public var fits: Bool { totalBytes <= availableBytes }
+        public var utilizationPercent: Double {
             Double(totalBytes) / Double(availableBytes) * 100.0
         }
 
         /// Formatted budget breakdown for display.
-        var description: String {
+        public var description: String {
+            // Use %@ for Swift String labels (not %s, which expects a C string pointer).
             let fmt = { (label: String, bytes: UInt64) -> String in
-                String(format: "  %-40s %6.1f GB", label, Double(bytes) / 1_073_741_824.0)
+                String(format: "  %-40@ %6.1f GB", label as NSString, Double(bytes) / 1_073_741_824.0)
             }
             let lines = [
                 fmt("Model weights:", weightMemoryBytes),
@@ -39,7 +40,7 @@ struct MemoryCalculator {
     }
 
     /// Calculate memory budget for the given configuration.
-    static func calculate(
+    public static func calculate(
         modelParameterCount: UInt64,
         bitsPerWeight: Int,
         contextLength: Int,

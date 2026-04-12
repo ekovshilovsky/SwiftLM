@@ -1,5 +1,5 @@
 import XCTest
-@testable import SwiftLM
+import TurboQuantKit
 
 final class MemoryCalculatorTests: XCTestCase {
 

@@ -20,6 +20,7 @@ import MLXLLM
 import MLXLMCommon
 import MLXVLM
 import Tokenizers
+import TurboQuantKit
 
 // ── Hub/Tokenizer bridges (Downloader + TokenizerLoader conformances) ─────────
 

@@ -8,16 +8,16 @@ import TurboQuantC
 /// Wraps opaque C handles with Swift memory management and type safety.
 /// When the TurboQuantC SPM package is not linked, all factory methods
 /// return nil, allowing the rest of SwiftLM to compile unconditionally.
-final class TurboQuantBridge {
+public final class TurboQuantBridge {
 
     /// Load a TurboQuant-compressed model from the specified path.
     /// Returns nil if the path is invalid or the model cannot be loaded.
-    static func loadModel(path: String) -> TurboQuantModel? {
+    public static func loadModel(path: String) -> TurboQuantModel? {
         return TurboQuantModel(path: path)
     }
 
     /// Create a TQ-compressed KV cache with the given parameters.
-    static func createKVCache(
+    public static func createKVCache(
         numLayers: Int,
         numHeads: Int,
         headDim: Int,
@@ -37,7 +37,7 @@ final class TurboQuantBridge {
 
     /// Query the linked TurboQuant library version string.
     /// Returns nil when TurboQuantC is not available.
-    static func libraryVersion() -> String? {
+    public static func libraryVersion() -> String? {
         #if canImport(TurboQuantC)
         guard let cStr = tq_version() else { return nil }
         return String(cString: cStr)
@@ -49,11 +49,11 @@ final class TurboQuantBridge {
 
 /// Swift wrapper for a loaded TurboQuant model.
 /// Owns the underlying C handle and releases it on deinitialization.
-final class TurboQuantModel {
+public final class TurboQuantModel {
     #if canImport(TurboQuantC)
     private let handle: tq_model_t
 
-    init?(path: String) {
+    public init?(path: String) {
         guard let h = tq_model_load(path) else { return nil }
         self.handle = h
     }
@@ -65,22 +65,22 @@ final class TurboQuantModel {
     /// Run a forward pass with the given input array.
     /// Caller is responsible for interpreting the returned opaque pointer
     /// (typically an MLX array) and freeing it via `TurboQuantBridge.freeArray`.
-    func forward(input: UnsafeRawPointer) -> UnsafeMutableRawPointer? {
+    public func forward(input: UnsafeRawPointer) -> UnsafeMutableRawPointer? {
         return tq_model_forward(handle, input)
     }
     #else
-    init?(path: String) { return nil }
+    public init?(path: String) { return nil }
     #endif
 }
 
 /// Swift wrapper for a TQ-compressed KV cache.
 /// Manages the lifecycle of the underlying C handle and provides
 /// type-safe access to cache operations.
-final class TurboQuantKVCache {
+public final class TurboQuantKVCache {
     #if canImport(TurboQuantC)
     private let handle: tq_kv_cache_t
 
-    init?(
+    public init?(
         numLayers: Int,
         numHeads: Int,
         headDim: Int,
@@ -104,22 +104,22 @@ final class TurboQuantKVCache {
     }
 
     /// Append key-value entries for a given transformer layer.
-    func append(layer: Int, keys: UnsafeRawPointer, values: UnsafeRawPointer) {
+    public func append(layer: Int, keys: UnsafeRawPointer, values: UnsafeRawPointer) {
         tq_kv_cache_append(handle, Int32(layer), keys, values)
     }
 
     /// Retrieve fp16 keys from the decode window for the specified range.
-    func getKeysFP16(layer: Int, start: Int, end: Int) -> UnsafeMutableRawPointer? {
+    public func getKeysFP16(layer: Int, start: Int, end: Int) -> UnsafeMutableRawPointer? {
         return tq_kv_cache_get_keys_fp16(handle, Int32(layer), Int32(start), Int32(end))
     }
 
     /// Retrieve fp16 values from the decode window for the specified range.
-    func getValuesFP16(layer: Int, start: Int, end: Int) -> UnsafeMutableRawPointer? {
+    public func getValuesFP16(layer: Int, start: Int, end: Int) -> UnsafeMutableRawPointer? {
         return tq_kv_cache_get_values_fp16(handle, Int32(layer), Int32(start), Int32(end))
     }
 
     /// Run fused TQ attention over the compressed region of the cache.
-    func attention(
+    public func attention(
         layer: Int,
         queries: UnsafeRawPointer,
         compressedStart: Int,
@@ -132,16 +132,16 @@ final class TurboQuantKVCache {
     }
 
     /// Current sequence length stored in the cache.
-    var sequenceLength: Int {
+    public var sequenceLength: Int {
         return Int(tq_kv_cache_seq_length(handle))
     }
 
     /// Free an array returned by forward, getKeys, getValues, or attention.
-    static func freeArray(_ ptr: UnsafeMutableRawPointer) {
+    public static func freeArray(_ ptr: UnsafeMutableRawPointer) {
         tq_array_free(ptr)
     }
     #else
-    init?(
+    public init?(
         numLayers: Int,
         numHeads: Int,
         headDim: Int,

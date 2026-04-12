@@ -1,5 +1,5 @@
 import XCTest
-@testable import SwiftLM
+import TurboQuantKit
 
 /// Regression tests ensuring TurboQuant additions do not break existing functionality.
 /// These tests are critical for the upstream PR to SharpAI/SwiftLM.

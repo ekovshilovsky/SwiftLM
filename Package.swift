@@ -28,10 +28,23 @@ let package = Package(
         .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.7.0"),
     ],
     targets: [
+        // ── TurboQuant library (shared between SwiftLM and tests) ────────
+        // Isolated library target so unit tests can import these types
+        // without @testable on the SwiftLM executable, which SPM does not
+        // support. No external dependencies: pure Foundation + conditional
+        // TurboQuantC import for bridge availability.
+        .target(
+            name: "TurboQuantKit",
+            dependencies: [
+                // .product(name: "TurboQuantC", package: "turboquant-mlx-core"),
+            ],
+            path: "Sources/SwiftLM/TurboQuant"
+        ),
         // ── CLI HTTP server (macOS only) ──────────────────────────────
         .executableTarget(
             name: "SwiftLM",
             dependencies: [
+                "TurboQuantKit",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
@@ -40,9 +53,9 @@ let package = Package(
                 .product(name: "Transformers", package: "swift-transformers"),
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                // .product(name: "TurboQuantC", package: "turboquant-mlx-core"),
             ],
-            path: "Sources/SwiftLM"
+            path: "Sources/SwiftLM",
+            exclude: ["TurboQuant"]
         ),
         // ── macOS GUI App (SwiftBuddy) ──────────────────────────────
         .executableTarget(
@@ -74,6 +87,24 @@ let package = Package(
         .testTarget(
             name: "SwiftBuddyTests",
             dependencies: ["SwiftBuddy", "MLXInferenceCore"]
+        ),
+        // ── TurboQuant Unit Tests ────────────────────────────────────
+        // Depends on TurboQuantKit so types can be imported without @testable
+        // on the SwiftLM executable. Tests cover: model detection, metadata
+        // validation, bridge fallback paths (no TurboQuantC linked), memory
+        // budget calculations, and distributed coordinator nil-safety behavior.
+        .testTarget(
+            name: "SwiftLMTests",
+            dependencies: ["TurboQuantKit"],
+            path: "tests/SwiftLMTests",
+            sources: [
+                "TurboQuant/TurboQuantBridgeTests.swift",
+                "TurboQuant/TurboQuantModelLoaderTests.swift",
+                "TurboQuant/DistributedCoordinatorTests.swift",
+                "TurboQuant/MemoryCalculatorTests.swift",
+                "TurboQuant/Integration/TurboQuantServingTests.swift",
+                "TurboQuant/Integration/UpstreamRegressionTests.swift",
+            ]
         )
     ]
 )
