@@ -249,6 +249,18 @@ struct MLXServer: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable TurboQuant KV-cache compression (3-bit PolarQuant+QJL). Compresses KV history > 8192 tokens to ~3.5 bits/token — recommended for 100k+ context. Default: disabled")
     var turboKV: Bool = false
 
+    @Flag(name: .long, help: "Enable TurboQuant multi-Mac distributed inference via JACCL/RDMA. Requires --tq-hostfile unless running single-node.")
+    var tqDistributed: Bool = false
+
+    @Option(name: .long, help: "Path to hostfile listing cluster nodes for distributed TurboQuant inference (one host per line)")
+    var tqHostfile: String?
+
+    @Option(name: .long, help: "Maximum context length for TurboQuant KV cache (default: 1048576)")
+    var tqMaxContext: Int?
+
+    @Option(name: .long, help: "KV cache compression bit-width for TurboQuant (2, 3, or 4). Lower values save memory at the cost of quality. Default: 3")
+    var tqKvBits: Int = 3
+
     @Option(name: .long, help: "Chunk size for prefill evaluation (default: 512, lower to prevent GPU timeout on large models)")
     var prefillSize: Int = 512
 
@@ -373,6 +385,56 @@ struct MLXServer: AsyncParsableCommand {
                 // Auto-partition when model exceeds available RAM (no flag needed)
                 requestedGPULayers = plan.recommendedGPULayers
                 print("[SwiftLM] Auto-partitioning: \(plan.recommendedGPULayers)/\(plan.totalLayers) layers on GPU")
+            }
+        }
+
+        // ── TurboQuant model detection and memory budget validation ──
+        if let modelDir = modelDirectory {
+            let modelPath = modelDir.path
+            if TurboQuantModelLoader.isTurboQuantModel(at: modelPath) {
+                // Validate TQ format version before attempting to load
+                if let validationError = TurboQuantModelLoader.validateMetadata(at: modelPath) {
+                    print("[SwiftLM] TurboQuant validation failed: \(validationError)")
+                    throw ExitCode.failure
+                }
+
+                print("[SwiftLM] Detected TurboQuant-compressed model")
+
+                // Run memory budget estimation for TQ models
+                if let params = TurboQuantModelLoader.readModelConfig(at: modelPath) {
+                    let kvBits = self.tqKvBits
+                    let maxContext = self.tqMaxContext ?? 1_048_576
+                    let decodeWindow = 131_072
+                    let budget = MemoryCalculator.calculate(
+                        modelParameterCount: params.estimatedParameterCount,
+                        bitsPerWeight: params.bitsPerWeight,
+                        contextLength: maxContext,
+                        numLayers: params.numLayers,
+                        numHeads: params.numHeads,
+                        headDim: params.headDim,
+                        kvBits: kvBits,
+                        decodeWindowTokens: decodeWindow
+                    )
+                    print("[SwiftLM] TurboQuant memory budget:\n\(budget.description)")
+                    if !budget.fits {
+                        print("[SwiftLM] WARNING: Model + KV cache exceeds available memory. Consider reducing --tq-max-context or increasing --tq-kv-bits.")
+                    }
+                }
+
+                // Initialize distributed coordinator if requested
+                if self.tqDistributed {
+                    let coordinator: DistributedCoordinator?
+                    if let hostfile = self.tqHostfile {
+                        coordinator = DistributedCoordinator.initialize(hostfile: hostfile)
+                    } else {
+                        coordinator = DistributedCoordinator.initializeLocal()
+                    }
+                    if let coord = coordinator {
+                        print("[SwiftLM] TurboQuant distributed: rank \(coord.rank)/\(coord.worldSize)")
+                    } else {
+                        print("[SwiftLM] WARNING: TurboQuant distributed initialization failed, falling back to single-node")
+                    }
+                }
             }
         }
 

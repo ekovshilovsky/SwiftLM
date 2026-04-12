@@ -1,7 +1,15 @@
 import Foundation
 
+#if canImport(TurboQuantC)
+import TurboQuantC
+#endif
+
 /// Swift wrapper for TQDistributedCoordinator C API.
 /// Manages multi-Mac cluster topology, shard planning, and distributed forward pass.
+///
+/// Uses conditional compilation so SwiftLM builds cleanly whether or not
+/// the TurboQuantC library is linked. When unavailable, all initializers
+/// return nil and properties return single-node defaults.
 final class DistributedCoordinator {
 
     /// Distributed backend options.
@@ -18,33 +26,68 @@ final class DistributedCoordinator {
         case auto
     }
 
+    #if canImport(TurboQuantC)
+    private let handle: tq_coordinator_t
+
+    private init(handle: tq_coordinator_t) {
+        self.handle = handle
+    }
+
+    deinit {
+        tq_distributed_free(handle)
+    }
+
     /// Initialize distributed coordinator from a hostfile.
     /// Returns nil if initialization fails (e.g., nodes unreachable).
     static func initialize(
         hostfile: String,
         backend: Backend = .auto
     ) -> DistributedCoordinator? {
-        // Phase 4: call tq_distributed_init via C API
-        return nil
+        guard let h = tq_distributed_init(hostfile, backend.rawValue) else {
+            return nil
+        }
+        return DistributedCoordinator(handle: h)
     }
 
     /// Initialize for single-node inference (no hostfile).
     static func initializeLocal() -> DistributedCoordinator? {
-        // Phase 4: call tq_distributed_init_local via C API
-        return nil
+        guard let h = tq_distributed_init_local() else {
+            return nil
+        }
+        return DistributedCoordinator(handle: h)
     }
 
     /// This node's rank in the cluster.
     var rank: Int {
-        // Phase 4: call tq_distributed_rank
-        return 0
+        return Int(tq_distributed_rank(handle))
     }
 
     /// Total number of nodes in the cluster.
     var worldSize: Int {
-        // Phase 4: call tq_distributed_world_size
-        return 1
+        return Int(tq_distributed_world_size(handle))
     }
+    #else
+    /// Initialize distributed coordinator from a hostfile.
+    /// Returns nil when TurboQuantC is not available.
+    static func initialize(
+        hostfile: String,
+        backend: Backend = .auto
+    ) -> DistributedCoordinator? {
+        return nil
+    }
+
+    /// Initialize for single-node inference (no hostfile).
+    /// Returns nil when TurboQuantC is not available.
+    static func initializeLocal() -> DistributedCoordinator? {
+        return nil
+    }
+
+    /// This node's rank in the cluster.
+    var rank: Int { return 0 }
+
+    /// Total number of nodes in the cluster.
+    var worldSize: Int { return 1 }
+    #endif
 
     /// Whether this node is the coordinator (rank 0).
     var isCoordinator: Bool {

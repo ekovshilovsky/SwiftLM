@@ -10,6 +10,10 @@ let package = Package(
         .executable(name: "SwiftBuddy", targets: ["SwiftBuddy"])
     ],
     dependencies: [
+        // TurboQuant C API — activated via `--package-path` when building against
+        // a CMake-built turboquant-mlx-core. The SPM package in the core repo
+        // requires CMake-provided MLX headers and cannot resolve standalone.
+        // .package(path: "../turboquant-mlx-core"),
         // Local Apple MLX Swift fork for C++ extensions
         .package(url: "https://github.com/SharpAI/mlx-swift.git", branch: "main"),
         // Apple's LLM library built on MLX Swift (SharpAI fork — with GPU/CPU layer partitioning)
@@ -36,6 +40,7 @@ let package = Package(
                 .product(name: "Transformers", package: "swift-transformers"),
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                // .product(name: "TurboQuantC", package: "turboquant-mlx-core"),
             ],
             path: "Sources/SwiftLM"
         ),
