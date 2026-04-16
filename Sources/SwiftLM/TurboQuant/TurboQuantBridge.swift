@@ -45,6 +45,18 @@ public final class TurboQuantBridge {
         return nil
         #endif
     }
+
+    /// Dequantize a TurboQuant model to fp16 safetensors for loading by
+    /// standard MLX model loaders. The output directory receives reconstructed
+    /// full-precision weights that any HuggingFace/MLX pipeline can consume.
+    /// Returns true on success, false on error.
+    public static func dequantModel(sourcePath: String, outputPath: String) -> Bool {
+        #if canImport(TurboQuantC)
+        return tq_model_dequant(sourcePath, outputPath) == 0
+        #else
+        return false
+        #endif
+    }
 }
 
 /// Swift wrapper for a loaded TurboQuant model.

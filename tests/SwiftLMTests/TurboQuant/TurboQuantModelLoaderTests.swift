@@ -104,4 +104,40 @@ final class TurboQuantModelLoaderTests: XCTestCase {
         let error = TurboQuantModelLoader.validateMetadata(at: "/nonexistent/model")
         XCTAssertNotNil(error)
     }
+
+    // MARK: - readModelConfig
+
+    func testReadModelConfigExtractsParameters() throws {
+        // The memory budget calculator depends on correctly extracting
+        // architecture parameters from config.json. Verify that the extraction
+        // handles the standard Qwen2 config format used by all TQ models.
+        let dir = try makeTempModelDir(config: [
+            "model_type": "qwen2",
+            "hidden_size": 2048,
+            "num_hidden_layers": 36,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 2,
+            "intermediate_size": 11008,
+            "vocab_size": 151936,
+            "quantization_config": [
+                "quantization_method": "turboquant",
+                "tq_version": "1",
+                "bits": 4,
+                "residual_bits": 4
+            ]
+        ])
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let params = TurboQuantModelLoader.readModelConfig(at: dir.path)
+        XCTAssertNotNil(params, "Should extract model config from a valid config.json")
+        XCTAssertEqual(params?.numLayers, 36)
+        XCTAssertEqual(params?.numHeads, 2)
+        XCTAssertEqual(params?.headDim, 128)  // 2048 / 16 = 128
+        XCTAssertEqual(params?.bitsPerWeight, 4)
+    }
+
+    func testReadModelConfigReturnsNilForMissingFile() {
+        let params = TurboQuantModelLoader.readModelConfig(at: "/nonexistent/model")
+        XCTAssertNil(params)
+    }
 }

@@ -3,13 +3,11 @@ import TurboQuantKit
 
 final class DistributedCoordinatorTests: XCTestCase {
 
-    func testInitLocalReturnsNilWithoutCLibrary() {
-        // TurboQuantC is not linked in the standalone SwiftLM SPM build.
-        // The #else branch in initializeLocal() returns nil unconditionally,
-        // which is the expected fallback for single-node inference without the
-        // C library present. The server startup path must handle nil gracefully.
+    func testInitLocalReturnsSingleNodeCoordinator() {
+        // With TurboQuantC linked, tq_distributed_init_local() creates a
+        // single-node coordinator with rank=0 and worldSize=1.
         let coord = DistributedCoordinator.initializeLocal()
-        XCTAssertNil(coord)
+        XCTAssertNotNil(coord, "Local coordinator should initialize for single-node mode")
     }
 
     func testInitWithInvalidHostfileReturnsNil() {

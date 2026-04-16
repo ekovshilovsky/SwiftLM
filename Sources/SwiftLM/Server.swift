@@ -436,6 +436,49 @@ struct MLXServer: AsyncParsableCommand {
                         print("[SwiftLM] WARNING: TurboQuant distributed initialization failed, falling back to single-node")
                     }
                 }
+
+                // Dequantize TQ weights to fp16 for loading through the standard
+                // MLXLLM pipeline. Uses a persistent cache directory so subsequent
+                // launches skip the dequantization step entirely. Dequantization
+                // runs as a subprocess (tq-dequant) to avoid Metal initialization
+                // conflicts between the C++ MLX library and MLX Swift.
+                let modelName = URL(fileURLWithPath: modelPath).lastPathComponent
+                let cacheDir = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".cache/turboquant/\(modelName)-fp16")
+                let cachePath = cacheDir.path
+
+                if FileManager.default.fileExists(atPath: cachePath) {
+                    print("[SwiftLM] Using cached fp16 dequant at \(cachePath)")
+                } else {
+                    print("[SwiftLM] Dequantizing TQ model to fp16 (first load)...")
+
+                    // Locate tq-dequant binary alongside libturboquant_mlx.dylib
+                    // (both are in the CMake build output directory)
+                    let dequantTool = Self.findTQDequantBinary()
+                    guard let toolPath = dequantTool else {
+                        print("[SwiftLM] ERROR: tq-dequant binary not found. Build turboquant-mlx-core first.")
+                        throw ExitCode.failure
+                    }
+
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: toolPath)
+                    process.arguments = [modelPath, cachePath]
+                    process.standardOutput = FileHandle.standardOutput
+                    process.standardError = FileHandle.standardError
+
+                    try process.run()
+                    process.waitUntilExit()
+
+                    guard process.terminationStatus == 0 else {
+                        print("[SwiftLM] ERROR: tq-dequant exited with status \(process.terminationStatus)")
+                        throw ExitCode.failure
+                    }
+                    print("[SwiftLM] Dequantization complete: \(cachePath)")
+                }
+
+                // Redirect model loading to the dequanted fp16 directory
+                modelConfig = ModelConfiguration(directory: cacheDir)
+                print("[SwiftLM] Loading dequanted fp16 weights via standard MLXLLM path")
             }
         }
 
@@ -791,6 +834,51 @@ struct MLXServer: AsyncParsableCommand {
         interruptSource.resume()
 
         try await app.runService()
+    }
+
+    /// Locate the tq-dequant binary from the turboquant-mlx-core CMake build.
+    /// Checks the sibling repo's build directory first (same layout used by the
+    /// Package.swift linker settings), then falls back to searching PATH.
+    static func findTQDequantBinary() -> String? {
+        let fm = FileManager.default
+
+        // Primary: sibling turboquant-mlx-core repo's build directory.
+        // The SwiftLM Package.swift links against this same build dir via
+        // linkerSettings, so if the library loaded, the binary is here too.
+        let execPath = ProcessInfo.processInfo.arguments[0]
+        let execDir = (execPath as NSString).deletingLastPathComponent
+
+        // Check paths relative to common development layouts
+        let candidates = [
+            // When running from SwiftLM/.build/release/ or similar
+            execDir + "/../../turboquant-mlx-core/build/tq-dequant",
+            // When running from SwiftLM repo root
+            execDir + "/../turboquant-mlx-core/build/tq-dequant",
+            // Absolute sibling path (covers `swift run` from SwiftLM/)
+            (fm.currentDirectoryPath as NSString)
+                .appendingPathComponent("../turboquant-mlx-core/build/tq-dequant"),
+            // Environment override for CI or custom layouts
+            ProcessInfo.processInfo.environment["TQ_DEQUANT_PATH"] ?? "",
+        ]
+
+        for path in candidates where !path.isEmpty {
+            let resolved = (path as NSString).standardizingPath
+            if fm.isExecutableFile(atPath: resolved) {
+                return resolved
+            }
+        }
+
+        // Fallback: search PATH
+        let pathDirs = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":").map(String.init)
+        for dir in pathDirs {
+            let candidate = (dir as NSString).appendingPathComponent("tq-dequant")
+            if fm.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+
+        return nil
     }
 }
 

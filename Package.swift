@@ -1,6 +1,12 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
+// Path to the CMake-built turboquant-mlx-core shared library.
+// The C++ core (libturboquant_mlx.dylib) is built via CMake in the sibling
+// repo; SPM imports the header-only TurboQuantC module for compile-time
+// availability and links the pre-built dylib for runtime symbol resolution.
+let turboquantBuildDir = "\(Context.packageDirectory)/../turboquant-mlx-core/build"
+
 let package = Package(
     name: "SwiftLM",
     platforms: [.macOS(.v14), .iOS(.v17)],
@@ -10,10 +16,8 @@ let package = Package(
         .executable(name: "SwiftBuddy", targets: ["SwiftBuddy"])
     ],
     dependencies: [
-        // TurboQuant C API — activated via `--package-path` when building against
-        // a CMake-built turboquant-mlx-core. The SPM package in the core repo
-        // requires CMake-provided MLX headers and cannot resolve standalone.
-        // .package(path: "../turboquant-mlx-core"),
+        // TurboQuant C API headers and module map (sibling repo, built via CMake)
+        .package(path: "../turboquant-mlx-core"),
         // Local Apple MLX Swift fork for C++ extensions
         .package(url: "https://github.com/SharpAI/mlx-swift.git", branch: "main"),
         // Apple's LLM library built on MLX Swift (SharpAI fork — with GPU/CPU layer partitioning)
@@ -36,7 +40,7 @@ let package = Package(
         .target(
             name: "TurboQuantKit",
             dependencies: [
-                // .product(name: "TurboQuantC", package: "turboquant-mlx-core"),
+                .product(name: "TurboQuantC", package: "turboquant-mlx-core"),
             ],
             path: "Sources/SwiftLM/TurboQuant"
         ),
@@ -55,7 +59,14 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Sources/SwiftLM",
-            exclude: ["TurboQuant"]
+            exclude: ["TurboQuant"],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-L\(turboquantBuildDir)",
+                    "-lturboquant_mlx",
+                    "-Xlinker", "-rpath", "-Xlinker", turboquantBuildDir,
+                ]),
+            ]
         ),
         // ── macOS GUI App (SwiftBuddy) ──────────────────────────────
         .executableTarget(
@@ -104,6 +115,13 @@ let package = Package(
                 "TurboQuant/MemoryCalculatorTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
                 "TurboQuant/Integration/UpstreamRegressionTests.swift",
+            ],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-L\(turboquantBuildDir)",
+                    "-lturboquant_mlx",
+                    "-Xlinker", "-rpath", "-Xlinker", turboquantBuildDir,
+                ]),
             ]
         )
     ]
