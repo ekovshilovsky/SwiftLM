@@ -183,6 +183,27 @@ final class ProgressTracker {
     }
 }
 
+/// Print the current node's locally persisted cluster record (or a
+/// note that none exists) and exit with status 0. Invoked from
+/// MLXServer.run() when --cluster-status is passed. Peer and session
+/// listing require the running cluster context and will be added once
+/// the cluster orchestration layer lands.
+fileprivate func printLocalClusterStatus() throws {
+    let store = try FileClusterKeyStore.default()
+    guard let record = try store.load() else {
+        print("[SwiftLM] No cluster joined on this node.")
+        print("[SwiftLM] (Storage: \(store.directory.path))")
+        return
+    }
+    let idHex = record.clusterId.map { String(format: "%02x", $0) }.joined()
+    print("[SwiftLM] Cluster record loaded from \(store.directory.path)")
+    print("  cluster.id:   \(idHex)")
+    print("  master key:   <32 bytes, not printed>")
+    print("")
+    print("[SwiftLM] Peer and session listing require a running cluster.")
+    print("[SwiftLM] Start the server with --distributed to join or form a cluster.")
+}
+
 @main
 struct MLXServer: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -265,7 +286,80 @@ struct MLXServer: AsyncParsableCommand {
     @Option(name: .long, help: "Chunk size for prefill evaluation (default: 512, lower to prevent GPU timeout on large models)")
     var prefillSize: Int = 512
 
+    // ── Bonjour-based distributed cluster (v1) ──
+    // Superset of the legacy hostfile-based --tq-distributed path; this
+    // set uses zero-config Bonjour peer discovery and is the forward
+    // path for multi-Mac inference. The legacy flags above will be
+    // deprecated once the Bonjour path reaches feature parity.
+
+    @Flag(name: .long, help: "Start in Bonjour-based distributed mode. Advertises this node on the LAN and discovers peers. Requires --model.")
+    var distributed: Bool = false
+
+    @Flag(name: .long, help: "Auto-join an existing cluster if one is known locally; otherwise create a new one without interactive prompting. Requires --distributed.")
+    var auto: Bool = false
+
+    @Option(name: .long, help: "Override the auto-detected node role. Values: primary, secondary. Requires --distributed.")
+    var role: String?
+
+    @Option(name: .long, help: "Background snapshot cadence in tokens for Secondary nodes (default: 1000). Requires --distributed.")
+    var snapshotInterval: Int?
+
+    @Flag(name: .long, help: "Print locally persisted cluster status and exit. Does not require --distributed.")
+    var clusterStatus: Bool = false
+
+    @Flag(name: .long, help: "Print the loaded model's layer type breakdown and exit.")
+    var layerTypeReport: Bool = false
+
     mutating func run() async throws {
+        // ── Distributed-mode CLI validation ──
+        // Parse and validate the v1 distributed flags before any heavy
+        // work (model download, weight load). Validation lives in
+        // TurboQuantKit so the logic is unit-testable; here we only
+        // surface failures.
+        let distributedOptions: DistributedCLIOptions
+        do {
+            distributedOptions = DistributedCLIOptions(
+                isDistributed: distributed,
+                isAuto: auto,
+                role: try DistributedCLIOptions.parseRole(role),
+                snapshotInterval: snapshotInterval,
+                printClusterStatus: clusterStatus,
+                printLayerTypeReport: layerTypeReport
+            )
+            try distributedOptions.validate()
+        } catch let err as DistributedCLIOptionsError {
+            print("[SwiftLM] error: \(err)")
+            throw ExitCode.validationFailure
+        }
+
+        // --cluster-status reads local state only and exits. It runs
+        // before model loading because a user checking cluster membership
+        // should not have to sit through a weights download.
+        if distributedOptions.printClusterStatus {
+            try printLocalClusterStatus()
+            return
+        }
+
+        // --distributed without the cluster-formation code wired up is
+        // not a silent no-op: exit with a clear pointer to what's missing.
+        if distributedOptions.isDistributed {
+            print("""
+                [SwiftLM] --distributed requested, but Bonjour-based cluster
+                formation (node discovery, handshake, key propagation) is
+                not yet wired. Use --tq-distributed with --tq-hostfile for
+                the legacy hostfile-based path, or wait for cluster
+                formation integration.
+                """)
+            throw ExitCode(EX_TEMPFAIL)
+        }
+
+        // --layer-type-report depends on model-internal inspection that
+        // hasn't been hooked up yet. Parse and reject cleanly.
+        if distributedOptions.printLayerTypeReport {
+            print("[SwiftLM] --layer-type-report is parsed but not yet implemented.")
+            throw ExitCode(EX_TEMPFAIL)
+        }
+
         print("[SwiftLM] Loading model: \(model)")
         let modelId = model
 
