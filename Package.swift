@@ -32,6 +32,33 @@ let package = Package(
         .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.7.0"),
     ],
     targets: [
+        // ── Vendored Argon2 reference implementation ─────────────────
+        // Source: github.com/P-H-C/phc-winner-argon2 @ f57e61e19229
+        // (2021-06-25, CC0/Apache-2.0 dual-licensed). Vendored directly so
+        // cluster authentication does not depend on any third-party wrapper.
+        // We include the portable reference round function (ref.c) rather
+        // than opt.c; Blake2 headers + blake2b.c live under blake2/.
+        .target(
+            name: "CArgon2",
+            path: "Sources/CArgon2",
+            exclude: ["LICENSE"],
+            sources: [
+                "argon2.c",
+                "core.c",
+                "ref.c",
+                "thread.c",
+                "encoding.c",
+                "blake2/blake2b.c",
+            ],
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("."),
+                .headerSearchPath("blake2"),
+                // Silence unused-parameter warnings from the upstream code;
+                // we do not want to patch the vendored source.
+                .unsafeFlags(["-Wno-unused-parameter", "-Wno-unused-function"]),
+            ]
+        ),
         // ── TurboQuant library (shared between SwiftLM and tests) ────────
         // Isolated library target so unit tests can import these types
         // without @testable on the SwiftLM executable, which SPM does not
@@ -41,6 +68,7 @@ let package = Package(
             name: "TurboQuantKit",
             dependencies: [
                 .product(name: "TurboQuantC", package: "turboquant-mlx-core"),
+                "CArgon2",
             ],
             path: "Sources/SwiftLM/TurboQuant"
         ),
@@ -114,6 +142,7 @@ let package = Package(
                 "TurboQuant/DistributedCoordinatorTests.swift",
                 "TurboQuant/MemoryCalculatorTests.swift",
                 "TurboQuant/BonjourDiscoveryTests.swift",
+                "TurboQuant/ClusterAuthTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
                 "TurboQuant/Integration/UpstreamRegressionTests.swift",
             ],
