@@ -153,6 +153,7 @@ let package = Package(
                 "TurboQuant/FileClusterKeyStoreTests.swift",
                 "TurboQuant/InMemoryClusterKeyStoreTests.swift",
                 "TurboQuant/DistributedCLIOptionsTests.swift",
+                "TurboQuant/TopologyReporterTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
                 "TurboQuant/Integration/UpstreamRegressionTests.swift",
             ],
