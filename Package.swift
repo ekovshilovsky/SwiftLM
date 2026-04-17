@@ -132,10 +132,16 @@ let package = Package(
         // on the SwiftLM executable. Tests cover: model detection, metadata
         // validation, bridge fallback paths (no TurboQuantC linked), memory
         // budget calculations, and distributed coordinator nil-safety behavior.
+        //
+        // The embedded entitlements (via -sectcreate __TEXT __entitlements)
+        // carry a keychain-access-groups entry that the ad-hoc signature
+        // applied by `swift test` picks up, granting the test binary real
+        // data-protection Keychain access without requiring a Developer ID.
         .testTarget(
             name: "SwiftLMTests",
             dependencies: ["TurboQuantKit"],
             path: "tests/SwiftLMTests",
+            exclude: ["SwiftLMTests.entitlements"],
             sources: [
                 "TurboQuant/TurboQuantBridgeTests.swift",
                 "TurboQuant/TurboQuantModelLoaderTests.swift",
@@ -143,6 +149,7 @@ let package = Package(
                 "TurboQuant/MemoryCalculatorTests.swift",
                 "TurboQuant/BonjourDiscoveryTests.swift",
                 "TurboQuant/ClusterAuthTests.swift",
+                "TurboQuant/ClusterKeyStoreTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
                 "TurboQuant/Integration/UpstreamRegressionTests.swift",
             ],
@@ -151,6 +158,12 @@ let package = Package(
                     "-L\(turboquantBuildDir)",
                     "-lturboquant_mlx",
                     "-Xlinker", "-rpath", "-Xlinker", turboquantBuildDir,
+                    // Embed entitlements plist into the xctest binary so
+                    // ad-hoc signing carries keychain-access-groups.
+                    "-Xlinker", "-sectcreate",
+                    "-Xlinker", "__TEXT",
+                    "-Xlinker", "__entitlements",
+                    "-Xlinker", "\(Context.packageDirectory)/tests/SwiftLMTests/SwiftLMTests.entitlements",
                 ]),
             ]
         )

@@ -58,8 +58,19 @@ public enum ClusterAuth {
 
     // MARK: - High-level derivation API
 
-    /// Derive a 256-bit master key from a user passphrase and salt using
-    /// Argon2id with the RFC 9106 interactive-profile parameters.
+    /// Derive a 256-bit master key from a user passphrase and salt
+    /// using Argon2id with the RFC 9106 interactive-profile parameters.
+    //
+    // Naming note: the key returned here is currently used both as the
+    // onboarding credential (proves the caller knows the passphrase)
+    // and as the working cluster key for session-key derivation. Once
+    // the coordinator generates a random working key at cluster
+    // creation and transmits it to joining nodes over the authenticated
+    // channel, the passphrase-derived value becomes a handshake
+    // credential only — distinct from the working key — and this
+    // function is to be renamed deriveHandshakeKey. The rename is
+    // deferred until there are two keys in the code so the name always
+    // matches current behavior.
     public static func deriveMasterKey(passphrase: String, salt: Data) -> Data {
         return argon2idRaw(passphrase: passphrase,
                            salt: salt,
@@ -70,10 +81,9 @@ public enum ClusterAuth {
     }
 
     /// Derive a purpose-specific subkey from the master using HKDF-SHA256.
-    /// The `info` parameter provides cryptographic domain separation: subkeys
-    /// derived with different info strings are uncorrelated even when the
-    /// same master key is used. Convention: info strings use the "tq-*"
-    /// namespace so cluster keys cannot collide with unrelated protocols.
+    /// The `info` parameter provides cryptographic domain separation:
+    /// subkeys derived with different info strings are uncorrelated even
+    /// when the same master key is used.
     public static func deriveSubkey(master: Data,
                                     info: String,
                                     length: Int = 32) -> SymmetricKey {
@@ -82,5 +92,22 @@ public enum ClusterAuth {
             info: Data(info.utf8),
             outputByteCount: length
         )
+    }
+
+    /// Derive the 8-hex-character discovery hash advertised in the
+    /// Bonjour TXT `cluster` field. Peers compare their own locally
+    /// derived hash against the advertised value; mismatching hashes
+    /// mean different clusters (or wrong passphrase) and the peers
+    /// ignore each other. Because the hash is derived from the cluster
+    /// master key, it is opaque to anyone who does not hold the
+    /// passphrase — no user-chosen cluster name ever appears on the
+    /// wire. The "discovery" info string is the domain-separation tag
+    /// for HKDF; other subkeys (handshake, transport, session) use
+    /// different tags so they are cryptographically uncorrelated.
+    public static func deriveDiscoveryHash(master: Data) -> String {
+        let key = deriveSubkey(master: master, info: "discovery", length: 4)
+        return key.withUnsafeBytes { bytes in
+            bytes.map { String(format: "%02x", $0) }.joined()
+        }
     }
 }

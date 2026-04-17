@@ -1,0 +1,12 @@
+This directory vendors the Argon2 reference implementation from
+https://github.com/P-H-C/phc-winner-argon2 at upstream commit
+f57e61e19229e23c4445b85494dbf7c07de721cb (2021-06-25).
+
+Upstream is dual-licensed: Creative Commons CC0 1.0 Universal or Apache
+License 2.0, at the licensee's option. This repository redistributes
+the vendored code under CC0 1.0 Universal (public domain dedication).
+The verbatim upstream license text is in LICENSE alongside this file.
+
+Full provenance, license election rationale, modification notes, and
+the list of files included/excluded from upstream is recorded in
+THIRD_PARTY.md at the repository root.
