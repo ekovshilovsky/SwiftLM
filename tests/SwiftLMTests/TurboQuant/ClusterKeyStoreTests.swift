@@ -8,11 +8,11 @@
 // The skip is not a workaround for a bad test — it reflects a platform
 // constraint: macOS checks Keychain access against the host process's
 // code signature, which for `swift test` is Apple's ad-hoc-signed
-// xctest binary that we cannot modify without breaking Xcode. Real
-// coverage of this path is Level 2 (Xcode test host) work.
+// xctest binary that cannot be modified without breaking Xcode. Real
+// coverage of this path requires an entitled Level 2 test host.
 //
 // Each run uses a unique service name so concurrent or re-run tests
-// cannot pollute one another; `deleteAll()` in tearDown keeps the host
+// cannot pollute one another; `delete()` in tearDown keeps the host
 // Keychain clean regardless of individual test outcomes.
 
 import XCTest
@@ -21,7 +21,7 @@ import TurboQuantKit
 final class ClusterKeyStoreTests: XCTestCase {
     private var store: KeychainClusterKeyStore!
 
-    /// OSStatus errSecMissingEntitlement. Hit by data-protection
+    /// OSStatus errSecMissingEntitlement. Returned by data-protection
     /// Keychain calls when the calling process lacks
     /// `keychain-access-groups` in its code signature.
     private static let errSecMissingEntitlement: OSStatus = -34018
@@ -29,22 +29,21 @@ final class ClusterKeyStoreTests: XCTestCase {
     override func setUpWithError() throws {
         try super.setUpWithError()
 
-        // Unique per-test-run service so parallel `swift test` invocations
-        // and accidental leftovers from prior runs cannot cross-contaminate.
-        // Access group matches the entitlements plist embedded into the
-        // xctest binary by Package.swift linker flags (__TEXT __entitlements);
-        // it only takes effect when the host process signature carries the
-        // same group (i.e. Level 2 test runs).
+        // Unique per-test-run service. Access group matches the
+        // entitlements plist embedded into the xctest bundle via
+        // Package.swift linker flags (__TEXT __entitlements); the
+        // group only takes effect when the host process signature
+        // carries the same group (Level 2 test runs).
         let suffix = UUID().uuidString.prefix(8)
         store = KeychainClusterKeyStore(
             service: "com.turboquant.cluster.test.\(suffix)",
             accessGroup: "com.turboquant.cluster.test")
 
-        // Probe: if the host can't access the Keychain at all, skip the
-        // whole test case rather than reporting false failures. One probe
-        // covers every test method.
+        // Probe once: if the host can't talk to the data-protection
+        // Keychain, skip the entire test case rather than surface every
+        // test as a failure. One probe covers all test methods.
         do {
-            _ = try store.load(cluster: "_probe_")
+            _ = try store.load()
         } catch let ClusterKeyStoreError.unexpectedStatus(status)
             where status == Self.errSecMissingEntitlement {
             throw XCTSkip(
@@ -57,105 +56,61 @@ final class ClusterKeyStoreTests: XCTestCase {
     }
 
     override func tearDown() {
-        // Best-effort cleanup; a test may already have deleted everything,
-        // and if the entitlement check failed in setUp the store may not
-        // have been used at all.
-        try? store?.deleteAll()
+        // Best-effort cleanup; if the entitlement check failed in setUp
+        // the store may not have been used.
+        try? store?.delete()
         super.tearDown()
     }
 
-    func testStoreAndLoadRoundTrip() throws {
-        let key = Data((0..<32).map { UInt8($0) })
-        try store.store(key: key, for: "home-lab")
-
-        let loaded = try store.load(cluster: "home-lab")
-        XCTAssertEqual(loaded, key)
-        XCTAssertEqual(loaded?.count, 32)
+    private func sampleRecord(
+        idByte: UInt8 = 0xA1, keyByte: UInt8 = 0xB2
+    ) -> ClusterRecord {
+        ClusterRecord(
+            clusterId: Data(repeating: idByte, count: 16),
+            key: Data(repeating: keyByte, count: 32)
+        )
     }
 
-    func testLoadReturnsNilForMissingCluster() throws {
-        let loaded = try store.load(cluster: "no-such-cluster")
+    // MARK: - Round-trip
+
+    func testSaveAndLoadRoundTrip() throws {
+        let record = sampleRecord()
+        try store.save(record)
+
+        let loaded = try store.load()
+        XCTAssertEqual(loaded, record)
+        XCTAssertEqual(loaded?.clusterId.count, 16)
+        XCTAssertEqual(loaded?.key.count, 32)
+    }
+
+    func testLoadReturnsNilWhenNoRecordStored() throws {
+        let loaded = try store.load()
         XCTAssertNil(loaded)
     }
 
-    func testStoreOverwritesPriorKey() throws {
-        let first = Data(repeating: 0xAA, count: 32)
-        let second = Data(repeating: 0xBB, count: 32)
+    func testSaveOverwritesPriorRecord() throws {
+        try store.save(sampleRecord(idByte: 0x11, keyByte: 0xAA))
+        try store.save(sampleRecord(idByte: 0x22, keyByte: 0xBB))
 
-        try store.store(key: first, for: "home-lab")
-        try store.store(key: second, for: "home-lab")
-
-        let loaded = try store.load(cluster: "home-lab")
-        XCTAssertEqual(loaded, second)
+        let loaded = try store.load()
+        XCTAssertEqual(loaded?.clusterId, Data(repeating: 0x22, count: 16))
+        XCTAssertEqual(loaded?.key, Data(repeating: 0xBB, count: 32))
     }
 
-    func testDeleteRemovesKey() throws {
-        let key = Data(repeating: 0xCC, count: 32)
-        try store.store(key: key, for: "home-lab")
-        XCTAssertEqual(try store.load(cluster: "home-lab"), key)
+    // MARK: - Delete
 
-        try store.delete(cluster: "home-lab")
-        XCTAssertNil(try store.load(cluster: "home-lab"))
+    func testDeleteRemovesRecord() throws {
+        try store.save(sampleRecord())
+        XCTAssertNotNil(try store.load())
+
+        try store.delete()
+        XCTAssertNil(try store.load())
     }
 
-    func testDeleteMissingClusterIsNotAnError() throws {
-        // Deleting a cluster that was never stored must succeed silently so
-        // idempotent cleanup paths don't need to probe-then-delete.
-        XCTAssertNoThrow(try store.delete(cluster: "never-existed"))
-    }
-
-    func testMultipleClustersAreIndependent() throws {
-        let keyA = Data(repeating: 0x11, count: 32)
-        let keyB = Data(repeating: 0x22, count: 32)
-
-        try store.store(key: keyA, for: "cluster-a")
-        try store.store(key: keyB, for: "cluster-b")
-
-        XCTAssertEqual(try store.load(cluster: "cluster-a"), keyA)
-        XCTAssertEqual(try store.load(cluster: "cluster-b"), keyB)
-
-        // Deleting one must not affect the other.
-        try store.delete(cluster: "cluster-a")
-        XCTAssertNil(try store.load(cluster: "cluster-a"))
-        XCTAssertEqual(try store.load(cluster: "cluster-b"), keyB)
-    }
-
-    // MARK: - End-to-end with the real derivation path
-
-    // Full flow: derive master key via Argon2id + HKDF, persist it, load
-    // it back, derive subkeys from the loaded master, confirm subkeys
-    // produced from stored-and-loaded material match those from the
-    // original in-memory material. This is the test that proves the
-    // Keychain round-trip preserves key material byte-for-byte through a
-    // real derivation use case.
-    func testEndToEnd_deriveStoreLoadSubkeys() throws {
-        let salt = Data(repeating: 0x5A, count: 16)
-        let originalMaster = ClusterAuth.deriveMasterKey(
-            passphrase: "correct horse battery staple", salt: salt)
-
-        try store.store(key: originalMaster, for: "home-lab")
-
-        let loadedMaster = try store.load(cluster: "home-lab")
-        XCTAssertEqual(loadedMaster, originalMaster)
-
-        let originalSubkey = ClusterAuth.deriveSubkey(
-            master: originalMaster, info: "tq-handshake-auth")
-        let roundTripSubkey = ClusterAuth.deriveSubkey(
-            master: loadedMaster!, info: "tq-handshake-auth")
-
-        XCTAssertEqual(originalSubkey.withUnsafeBytes { Data($0) },
-                       roundTripSubkey.withUnsafeBytes { Data($0) })
-    }
-
-    func testDeleteAllRemovesEverythingUnderService() throws {
-        try store.store(key: Data(repeating: 0x01, count: 32), for: "a")
-        try store.store(key: Data(repeating: 0x02, count: 32), for: "b")
-        try store.store(key: Data(repeating: 0x03, count: 32), for: "c")
-
-        try store.deleteAll()
-
-        XCTAssertNil(try store.load(cluster: "a"))
-        XCTAssertNil(try store.load(cluster: "b"))
-        XCTAssertNil(try store.load(cluster: "c"))
+    func testDeleteWhenNoRecordIsNotAnError() throws {
+        // Idempotent cleanup path: calling delete on an empty store
+        // must not throw. Callers rely on this for "ensure absent"
+        // semantics without a prior probe.
+        XCTAssertNoThrow(try store.delete())
     }
 }
