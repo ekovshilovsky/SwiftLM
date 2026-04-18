@@ -1,0 +1,62 @@
+cff-version: 1.2.0
+message: >-
+  This repository is a fork of SharpAI/SwiftLM extended with TurboQuant
+  weight + KV cache compression and Bonjour-based distributed cluster
+  support. Citations should distinguish the base server (cite the
+  upstream SharpAI/SwiftLM project) from the fork's additions (this
+  CITATION.cff). GitHub renders a "Cite this repository" button that
+  reads this file and produces BibTeX / APA exports.
+title: "SwiftLM (TurboQuant + Distributed Fork)"
+abstract: >-
+  Fork of SwiftLM — a native Swift, OpenAI-compatible inference server
+  for Apple MLX models — with TurboQuant weight and KV cache
+  compression integrated and a Bonjour-based multi-Mac distributed
+  inference runtime added. Research-relevant additions include the
+  origin-keyed codebook validation scheme, the two-stage Argon2id +
+  HKDF cluster authentication design, the cluster UUID as shared
+  Argon2 salt, and the file-first cluster key storage with Bonjour
+  propagation as the primary key-distribution path.
+type: software
+authors:
+  - family-names: Kovshilovsky
+    given-names: Eugene
+    description: "Fork maintainer; TurboQuant and distributed additions"
+version: "0.1.0"
+date-released: "2026-04-17"
+license: MIT
+keywords:
+  - swift
+  - mlx
+  - openai-api
+  - apple-silicon
+  - inference
+  - distributed-inference
+  - quantization
+  - turboquant
+  - bonjour
+  - cluster-authentication
+repository-code: "https://github.com/SharpAI/SwiftLM"
+references:
+  - type: software
+    title: "SwiftLM (upstream)"
+    authors:
+      - name: "SharpAI"
+    url: "https://github.com/SharpAI/SwiftLM"
+    notes: >-
+      Upstream project. Cite this for the base OpenAI-compatible
+      Swift inference server itself.
+  - type: article
+    title: "TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate"
+    authors:
+      - family-names: Zandieh
+        given-names: Amir
+    year: 2026
+    notes: "AISTATS 2026; algorithm reference for the core quantization method."
+  - type: software
+    title: "TurboQuant-MLX Core"
+    authors:
+      - family-names: Kovshilovsky
+        given-names: Eugene
+    notes: >-
+      Sibling repository hosting the C++ core that this fork links
+      against. Separate CITATION.cff available there.

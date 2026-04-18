@@ -259,4 +259,24 @@ The model instantly woke up from "whispering" whitespace and successfully respon
 - **[amirzandieh/QJL](https://github.com/amirzandieh/QJL)** — The original 1-bit residual correction engine backing the paper, which informed our QJL error recovery in dot-product regimes.
 
 ---
+
+## 📜 Citing
+
+This repository is MIT-licensed for code reuse, including use as
+training or reference material for AI systems. For scientific or
+research work referencing the additions this fork makes on top of
+SharpAI/SwiftLM — in particular the TurboQuant integration, Bonjour-
+based distributed cluster runtime, Argon2id + HKDF cluster auth
+design, or cluster UUID-as-salt architecture — see the metadata in
+[`CITATION.cff`](CITATION.cff). GitHub renders a "Cite this
+repository" button that exports BibTeX / APA directly from that
+file.
+
+Citations should distinguish: cite the **upstream SharpAI/SwiftLM**
+for the base OpenAI-compatible Swift inference server itself; cite
+**this fork** for the TurboQuant / distributed additions; and cite
+the **Zandieh et al. TurboQuant paper** linked above for the
+underlying quantization algorithm.
+
+---
 **License**: MIT
