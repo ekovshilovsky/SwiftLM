@@ -6,6 +6,20 @@
 
 import Foundation
 
+/// Shape of the cluster's physical connectivity graph. Raw values are
+/// the terminal-rendered form; Swift-level naming is camelCased per
+/// language convention.
+public enum ClusterTopologyType: String, Sendable {
+    /// Every pair of nodes has a direct point-to-point link.
+    case fullyConnected = "fully_connected"
+    /// Nodes arranged in a line: A–B–C–D. Common on small clusters
+    /// limited by Thunderbolt port count.
+    case chain = "chain"
+    /// Some pairs direct, some routed through an intermediary. Usually
+    /// actionable via an additional cable.
+    case partialMesh = "partial_mesh"
+}
+
 /// Formats cluster topology information as human-readable terminal output
 /// with actionable recommendations for missing Thunderbolt links and
 /// RDMA configuration steps.
@@ -16,16 +30,13 @@ public struct TopologyReporter {
         public let nodes: [NodeSummary]
         public let links: [LinkInfo]
         public let strategy: String
-        /// Free-form topology label surfaced to the user, e.g. `"fully_connected"`,
-        /// `"chain"`, or `"partial_mesh"`. Not validated here; callers pass
-        /// whatever shape name makes sense for the detected layout.
-        public let topologyType: String
+        public let topologyType: ClusterTopologyType
 
         public init(
             nodes: [NodeSummary],
             links: [LinkInfo],
             strategy: String,
-            topologyType: String
+            topologyType: ClusterTopologyType
         ) {
             self.nodes = nodes
             self.links = links
@@ -63,22 +74,22 @@ public struct TopologyReporter {
         }
     }
 
-    /// A measured (or absent) point-to-point link between two nodes.
-    /// `isDirect == false` is how the reporter emits an actionable
-    /// "connect a Thunderbolt cable" recommendation; latency is ignored
-    /// for indirect links since routing through a third node yields a
-    /// number that would mislead the operator.
+    /// A point-to-point link between two nodes, direct or indirect.
+    /// `latencyUs` is optional: nil means the latency has not been
+    /// measured or is not applicable (e.g., an indirect link routed
+    /// through a third node, where a measured number would mislead
+    /// the operator).
     public struct LinkInfo {
         public let nodeA: String
         public let nodeB: String
-        public let latencyUs: Double
+        public let latencyUs: Double?
         public let isDirect: Bool
         public let rdmaStatus: RdmaCapability
 
         public init(
             nodeA: String,
             nodeB: String,
-            latencyUs: Double,
+            latencyUs: Double?,
             isDirect: Bool,
             rdmaStatus: RdmaCapability
         ) {
@@ -93,17 +104,27 @@ public struct TopologyReporter {
     /// Render the full cluster status report as a single string with
     /// newline-separated lines. The output has no trailing newline so
     /// callers choose whether to append one.
+    ///
+    /// For a link with `isDirect == false`, the reporter prints
+    /// "No direct link" and emits an "ACTION NEEDED: Connect
+    /// Thunderbolt cable" recommendation below; any `latencyUs` on
+    /// such a link is ignored because a number measured via routing
+    /// through a third node would mislead the operator.
     public static func format(_ topology: ClusterTopology) -> String {
         var lines: [String] = []
         lines.append("[TurboQuant Cluster]")
-        lines.append("  Topology: \(topology.nodes.count) nodes, \(topology.topologyType)")
+        lines.append("  Topology: \(topology.nodes.count) nodes, \(topology.topologyType.rawValue)")
         lines.append("  Strategy: \(topology.strategy)")
         lines.append("")
         lines.append("  Connectivity:")
         for link in topology.links {
             let status: String
             if link.isDirect {
-                status = "\(link.rdmaStatus.rawValue) \(String(format: "%.0f", link.latencyUs))us"
+                if let latency = link.latencyUs {
+                    status = "\(link.rdmaStatus.rawValue) \(String(format: "%.0f", latency))us"
+                } else {
+                    status = "\(link.rdmaStatus.rawValue) (unmeasured)"
+                }
             } else {
                 status = "No direct link"
             }

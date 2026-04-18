@@ -50,7 +50,7 @@ final class TopologyReporterTests: XCTestCase {
                 ),
             ],
             strategy: "layer-split",
-            topologyType: "fully_connected"
+            topologyType: .fullyConnected
         )
 
         let expected = """
@@ -117,13 +117,13 @@ final class TopologyReporterTests: XCTestCase {
                 TopologyReporter.LinkInfo(
                     nodeA: "mac-studio-1",
                     nodeB: "mac-studio-3",
-                    latencyUs: 0,
+                    latencyUs: nil,
                     isDirect: false,
                     rdmaStatus: .unsupported
                 ),
             ],
             strategy: "layer-split",
-            topologyType: "partial_mesh"
+            topologyType: .partialMesh
         )
 
         let expected = """
@@ -179,7 +179,7 @@ final class TopologyReporterTests: XCTestCase {
                 ),
             ],
             strategy: "layer-split",
-            topologyType: "fully_connected"
+            topologyType: .fullyConnected
         )
 
         let expected = """
@@ -233,7 +233,7 @@ final class TopologyReporterTests: XCTestCase {
                 ),
             ],
             strategy: "layer-split",
-            topologyType: "fully_connected"
+            topologyType: .fullyConnected
         )
 
         let expected = """
@@ -284,7 +284,7 @@ final class TopologyReporterTests: XCTestCase {
                 ),
             ],
             strategy: "layer-split",
-            topologyType: "fully_connected"
+            topologyType: .fullyConnected
         )
 
         let expected = """
@@ -351,13 +351,13 @@ final class TopologyReporterTests: XCTestCase {
                 TopologyReporter.LinkInfo(
                     nodeA: "mac-studio-1",
                     nodeB: "mac-studio-3",
-                    latencyUs: 0,
+                    latencyUs: nil,
                     isDirect: false,
                     rdmaStatus: .unsupported
                 ),
             ],
             strategy: "layer-split",
-            topologyType: "partial_mesh"
+            topologyType: .partialMesh
         )
 
         let expected = """
