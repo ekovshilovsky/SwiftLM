@@ -80,12 +80,12 @@ public final class BonjourService: @unchecked Sendable {
 
     // MARK: - Configuration
 
-    private let advertisedInfo: DiscoveryInfo
     private let advertisedServiceName: String
 
     // MARK: - Mutable state (guarded by queue)
 
     private let stateQueue = DispatchQueue(label: "turboquant.bonjour.state")
+    private var advertisedInfo: DiscoveryInfo
     private var listener: NWListener?
     private var browser: NWBrowser?
     private var localClusterHash: String?
@@ -100,6 +100,14 @@ public final class BonjourService: @unchecked Sendable {
     /// call appends its continuation here; the browser handler fans
     /// out to all of them.
     private var peerContinuations: [UUID: AsyncStream<DiscoveredPeer>.Continuation] = [:]
+    /// Single-consumer stream of inbound TCP connections accepted by
+    /// the listener. ClusterManager subscribes to this to run the
+    /// coordinator side of the join handshake. The stream is created
+    /// lazily on the first `incomingConnections()` call; connections
+    /// accepted before any subscriber has attached are dropped on the
+    /// floor — ClusterManager is expected to subscribe before it calls
+    /// `start()`.
+    private var incomingContinuation: AsyncStream<NWConnection>.Continuation?
 
     // MARK: - Init
 
@@ -163,6 +171,68 @@ public final class BonjourService: @unchecked Sendable {
                 cont.resume(throwing: BonjourServiceError.notReady)
                 portContinuation = nil
             }
+            incomingContinuation?.finish()
+            incomingContinuation = nil
+        }
+    }
+
+    /// Update the TXT record fields advertised on the wire. Called by
+    /// ClusterManager after cluster creation or join so the node's
+    /// role / clusterHash / clusterId flip from `.discovering`+none to
+    /// the committed cluster values without tearing the listener down.
+    /// The underlying NWListener has its `.service` reassigned, which
+    /// mDNSResponder handles as a TXT update on the existing
+    /// advertisement — no port change, no re-resolve on peers.
+    public func updateAdvertisedInfo(_ info: DiscoveryInfo) {
+        // Synchronous dispatch so callers that sequence
+        // updateAdvertisedInfo → start() see the updated info when
+        // startListener reads it. The state queue is short-running
+        // (never blocks on I/O) so a sync hop is safe.
+        stateQueue.sync {
+            self.advertisedInfo = info
+            guard let listener = self.listener else {
+                // Listener has not been created yet — the next
+                // startListener() call will pick up the new info from
+                // `self.advertisedInfo`.
+                return
+            }
+            let txtDict = info.toTxtRecord()
+            var txtRecord = NWTXTRecord()
+            for (k, v) in txtDict {
+                txtRecord[k] = v
+            }
+            listener.service = NWListener.Service(
+                name: self.advertisedServiceName,
+                type: Self.serviceType,
+                domain: nil,
+                txtRecord: txtRecord
+            )
+        }
+    }
+
+    /// Async stream of inbound TCP connections accepted by the Bonjour
+    /// listener. Single-consumer: each call returns a fresh stream but
+    /// only the most recently requested one receives new connections.
+    /// ClusterManager runs the coordinator side of the handshake for
+    /// each yielded connection. Connections yielded here have already
+    /// been `.start(queue:)`ed; callers drive them via the handshake
+    /// endpoint adapter.
+    public func incomingConnections() -> AsyncStream<NWConnection> {
+        return AsyncStream { continuation in
+            self.stateQueue.async { [weak self] in
+                guard let self else { continuation.finish(); return }
+                // Finish any prior subscriber so only one reader is
+                // active at a time — matches the single-consumer
+                // contract this stream is designed for.
+                self.incomingContinuation?.finish()
+                self.incomingContinuation = continuation
+            }
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.stateQueue.async {
+                    self.incomingContinuation = nil
+                }
+            }
         }
     }
 
@@ -217,12 +287,27 @@ public final class BonjourService: @unchecked Sendable {
             txtRecord: txtRecord
         )
         // The listener accepts inbound connections from joiners.
-        // BonjourService itself does not handle them — ClusterManager
-        // wires a separate coordinator listener. We still install a
-        // no-op handler so the framework does not log a missing-handler
-        // warning; accepted connections are immediately cancelled.
-        listener.newConnectionHandler = { connection in
-            connection.cancel()
+        // ClusterManager subscribes via `incomingConnections()` and
+        // runs the coordinator side of the handshake for each one.
+        // Start the connection on the state queue before yielding so
+        // the consumer receives it in a transport-ready state; if
+        // nobody is subscribed we drop the connection on the floor
+        // rather than leaking it.
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else {
+                connection.cancel()
+                return
+            }
+            // newConnectionHandler fires on the same queue as
+            // stateUpdateHandler (we pass stateQueue to listener.start),
+            // so direct reads of incomingContinuation are already
+            // serialized with subscribe / unsubscribe paths.
+            if let cont = self.incomingContinuation {
+                connection.start(queue: self.stateQueue)
+                cont.yield(connection)
+            } else {
+                connection.cancel()
+            }
         }
         // stateUpdateHandler runs on the queue passed to start(), which
         // is stateQueue — so direct state mutation here is already
