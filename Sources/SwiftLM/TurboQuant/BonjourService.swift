@@ -35,7 +35,7 @@ import Network
 /// endpoint to `NWConnection(to:using:)` to open the join-handshake
 /// transport; they do not need to resolve host/port separately because
 /// NWConnection performs the mDNS resolution implicitly.
-public struct DiscoveredPeer: Sendable, Equatable {
+public struct DiscoveredPeer: Sendable {
     public let info: DiscoveryInfo
     public let endpoint: NWEndpoint
 
@@ -43,28 +43,21 @@ public struct DiscoveredPeer: Sendable, Equatable {
         self.info = info
         self.endpoint = endpoint
     }
-
-    public static func == (lhs: DiscoveredPeer, rhs: DiscoveredPeer) -> Bool {
-        // Endpoint equality is compared by description; NWEndpoint is not
-        // Equatable in the public SDK but two endpoints constructed for
-        // the same Bonjour service print identically.
-        return lhs.info == rhs.info && lhs.endpoint.debugDescription == rhs.endpoint.debugDescription
-    }
 }
 
-/// Errors surfaced by `BonjourService`. The listener-failed case is
-/// distinguished from a general `NWError` so callers can branch on "we
-/// never started advertising" versus "mDNS is broken in this
-/// environment" — the latter is a legitimate skip reason for tests.
+/// Errors surfaced by `BonjourService`. `listenerFailed` wraps the
+/// underlying `NWError` so test harnesses can recognize the
+/// "mDNS is broken in this environment" case (sandboxed CI, containers
+/// without multicast) and convert it into an `XCTSkip` instead of a
+/// hard failure. `notReady` is reported when callers await the
+/// listener port after `stop()` has already torn the listener down.
 public enum BonjourServiceError: Error, CustomStringConvertible {
     case listenerFailed(NWError)
-    case browserFailed(NWError)
     case notReady
 
     public var description: String {
         switch self {
         case .listenerFailed(let err): return "Bonjour listener failed: \(err)"
-        case .browserFailed(let err): return "Bonjour browser failed: \(err)"
         case .notReady: return "Bonjour listener has not become ready"
         }
     }
@@ -265,17 +258,13 @@ public final class BonjourService: @unchecked Sendable {
     }
 
     private func awaitReadyPort() async throws -> NWEndpoint.Port {
-        // If the listener is already ready by the time we await — rare
-        // but possible under test — return the port directly.
-        if let existing = stateQueue.sync(execute: { self.listener?.port }),
-           stateQueue.sync(execute: { self.listener?.state }) == .ready {
-            return existing
-        }
         return try await withCheckedThrowingContinuation { continuation in
             stateQueue.async {
-                // Race: listener may have reached .ready between the
-                // initial check and this block. If so, resume now.
-                if self.listener?.state == .ready, let port = self.listener?.port {
+                // The listener may have reached .ready before this block
+                // runs (the stateUpdateHandler runs on the same queue). If
+                // so, resume now; otherwise park the continuation so the
+                // handler can resume it when .ready fires.
+                if case .ready = self.listener?.state, let port = self.listener?.port {
                     continuation.resume(returning: port)
                     return
                 }
