@@ -146,6 +146,7 @@ let package = Package(
                 "TurboQuant/TurboQuantBridgeTests.swift",
                 "TurboQuant/TurboQuantModelLoaderTests.swift",
                 "TurboQuant/DistributedCoordinatorTests.swift",
+                "TurboQuant/ClusterPlanBuilderTests.swift",
                 "TurboQuant/MemoryCalculatorTests.swift",
                 "TurboQuant/BonjourDiscoveryTests.swift",
                 "TurboQuant/ClusterAuthTests.swift",

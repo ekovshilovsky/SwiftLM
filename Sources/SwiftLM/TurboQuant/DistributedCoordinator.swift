@@ -94,3 +94,73 @@ public final class DistributedCoordinator {
         return rank == 0
     }
 }
+
+/// Builder over the TurboQuantC cluster C API for memory-aware
+/// pipeline-parallel layer assignment. Typical use: create with the
+/// model's dimensions, add each discovered peer's memory, call plan(),
+/// then read the layer range assigned to each rank.
+///
+/// The builder is single-shot: once plan() succeeds, the assignment is
+/// fixed and no further nodes can be added. This mirrors the C API
+/// contract, which guards against inconsistent state between the
+/// registered node list and the computed ShardPlan.
+public final class ClusterPlanBuilder {
+
+    #if canImport(TurboQuantC)
+    private let handle: tq_cluster_t
+    private var planned = false
+
+    public init?(numLayers: Int, numHeads: Int, headDim: Int) {
+        guard let h = tq_cluster_create(Int32(numLayers), Int32(numHeads), Int32(headDim)) else {
+            return nil
+        }
+        self.handle = h
+    }
+
+    deinit {
+        tq_cluster_free(handle)
+    }
+
+    /// Register a discovered peer. Returns false if the hostname is empty,
+    /// memory is non-positive, or plan() has already been called.
+    public func addNode(hostname: String, memoryGB: Double) -> Bool {
+        return hostname.withCString { cstr in
+            tq_cluster_add_node(handle, cstr, memoryGB) == 0
+        }
+    }
+
+    /// Compute the memory-aware pipeline-parallel assignment. Must be
+    /// called exactly once; further calls return false.
+    public func plan() -> Bool {
+        let rc = tq_cluster_plan(handle)
+        if rc == 0 { planned = true }
+        return rc == 0
+    }
+
+    /// Number of nodes currently registered with the builder.
+    public var nodeCount: Int {
+        return Int(tq_cluster_node_count(handle))
+    }
+
+    /// Inclusive-exclusive layer range for the given rank, or nil if
+    /// plan() has not been called or rank is out of range.
+    public func layerRange(forRank rank: Int) -> Range<Int>? {
+        guard planned else { return nil }
+        let start = tq_cluster_get_layer_start(handle, Int32(rank))
+        let end = tq_cluster_get_layer_end(handle, Int32(rank))
+        guard start >= 0, end >= 0 else { return nil }
+        return Int(start)..<Int(end)
+    }
+    #else
+    /// Initializer returns nil when TurboQuantC is not available so callers
+    /// detect the missing backend rather than operating on a stub handle.
+    public init?(numLayers: Int, numHeads: Int, headDim: Int) {
+        return nil
+    }
+
+    public func addNode(hostname: String, memoryGB: Double) -> Bool { return false }
+    public func plan() -> Bool { return false }
+    public var nodeCount: Int { return 0 }
+    public func layerRange(forRank rank: Int) -> Range<Int>? { return nil }
+    #endif
+}
