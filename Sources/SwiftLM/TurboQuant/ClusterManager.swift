@@ -52,9 +52,14 @@ public actor ClusterManager {
     private var record: ClusterRecord?
 
     /// Task running the coordinator accept loop for any inbound join
-    /// attempts. Started by `createCluster(...)`; cancelled on manager
-    /// deinit is not possible from an actor, so callers that need a
-    /// clean teardown should call `stop()` (future).
+    /// attempts. Started by `createCluster(...)`. Lifecycle is
+    /// currently bounded by the injected `BonjourService`: when a
+    /// caller invokes `bonjour.stop()` the underlying
+    /// `incomingConnections()` stream is finished, so this `for await`
+    /// loop exits and the Task completes. Actor deinit cannot `await`
+    /// and therefore cannot cancel the task on its own; Task 12c will
+    /// add a structured `stop()` on the manager alongside the CLI
+    /// shutdown path.
     private var coordinatorAcceptTask: Task<Void, Never>?
 
     /// Set to true after the underlying BonjourService has been
@@ -102,7 +107,12 @@ public actor ClusterManager {
         passphrase: String,
         clusterName: String?
     ) async throws -> ClusterRecord {
-        _ = clusterName  // reserved for future UI; not used on the wire
+        // `clusterName` is accepted in the public signature to keep
+        // the CLI layer (Task 12c) free to pass a user-visible label
+        // through without a signature change later. It is deliberately
+        // not advertised on the wire — the Bonjour TXT `cluster` field
+        // holds the passphrase-derived discovery hash, not a name.
+        _ = clusterName
 
         let uuid = UUID()
         let uuidBytes = Self.uuidToData(uuid)
@@ -256,6 +266,13 @@ public actor ClusterManager {
     /// before cluster join — every visible cluster) is already
     /// handled inside BonjourService. ClusterManager does not add a
     /// second filter layer.
+    ///
+    /// Marked `nonisolated` because the implementation reads only the
+    /// `bonjour` stored property (an immutable `let` captured at
+    /// init) and calls `BonjourService.peers()`, which is itself
+    /// thread-safe via an internal dispatch queue. No actor-isolated
+    /// state is touched, so the call does not need to suspend into
+    /// the actor's executor — callers consume the stream directly.
     public nonisolated func listPeers() -> AsyncStream<DiscoveredPeer> {
         return bonjour.peers()
     }
