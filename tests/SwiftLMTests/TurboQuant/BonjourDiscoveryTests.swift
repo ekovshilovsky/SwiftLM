@@ -192,8 +192,8 @@ final class BonjourDiscoveryTests: XCTestCase {
         let clusterUUID = UUID(uuidString: "7f3a8b91-4e2c-4c5d-9e6f-1a2b3c4d5e6f")!
         let salt = withUnsafeBytes(of: clusterUUID.uuid) { Data($0) }
 
-        let masterA = ClusterAuth.deriveMasterKey(passphrase: passphrase, salt: salt)
-        let masterB = ClusterAuth.deriveMasterKey(passphrase: passphrase, salt: salt)
+        let masterA = ClusterAuth.deriveHandshakeKey(passphrase: passphrase, salt: salt)
+        let masterB = ClusterAuth.deriveHandshakeKey(passphrase: passphrase, salt: salt)
         XCTAssertEqual(masterA, masterB)
 
         let hashA = ClusterAuth.deriveDiscoveryHash(master: masterA)

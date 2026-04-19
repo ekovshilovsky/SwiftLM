@@ -96,30 +96,30 @@ final class ClusterAuthTests: XCTestCase {
                        "Argon2id KAT mismatch on third vector")
     }
 
-    // MARK: - Master key derivation
+    // MARK: - Handshake key derivation
 
-    func testMasterKeyDeterministic() {
+    func testHandshakeKeyDeterministic() {
         let salt = Data(repeating: 0x42, count: 16)
-        let key1 = ClusterAuth.deriveMasterKey(passphrase: "correct horse battery staple",
+        let key1 = ClusterAuth.deriveHandshakeKey(passphrase: "correct horse battery staple",
                                                salt: salt)
-        let key2 = ClusterAuth.deriveMasterKey(passphrase: "correct horse battery staple",
+        let key2 = ClusterAuth.deriveHandshakeKey(passphrase: "correct horse battery staple",
                                                salt: salt)
         XCTAssertEqual(key1, key2)
         XCTAssertEqual(key1.count, 32)
     }
 
-    func testMasterKeyDiffersByPassphrase() {
+    func testHandshakeKeyDiffersByPassphrase() {
         let salt = Data(repeating: 0x42, count: 16)
-        let k1 = ClusterAuth.deriveMasterKey(passphrase: "apple", salt: salt)
-        let k2 = ClusterAuth.deriveMasterKey(passphrase: "orange", salt: salt)
+        let k1 = ClusterAuth.deriveHandshakeKey(passphrase: "apple", salt: salt)
+        let k2 = ClusterAuth.deriveHandshakeKey(passphrase: "orange", salt: salt)
         XCTAssertNotEqual(k1, k2)
     }
 
-    func testMasterKeyDiffersBySalt() {
+    func testHandshakeKeyDiffersBySalt() {
         let saltA = Data(repeating: 0xAA, count: 16)
         let saltB = Data(repeating: 0xBB, count: 16)
-        let k1 = ClusterAuth.deriveMasterKey(passphrase: "same", salt: saltA)
-        let k2 = ClusterAuth.deriveMasterKey(passphrase: "same", salt: saltB)
+        let k1 = ClusterAuth.deriveHandshakeKey(passphrase: "same", salt: saltA)
+        let k2 = ClusterAuth.deriveHandshakeKey(passphrase: "same", salt: saltB)
         XCTAssertNotEqual(k1, k2)
     }
 

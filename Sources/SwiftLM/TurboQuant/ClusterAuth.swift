@@ -24,7 +24,7 @@ public enum ClusterAuth {
 
     /// Run Argon2id with caller-supplied parameters. Exposed for testing
     /// against known-answer vectors; production callers should use
-    /// deriveMasterKey() to apply the recommended parameters consistently.
+    /// deriveHandshakeKey() to apply the recommended parameters consistently.
     public static func argon2idRaw(passphrase: String,
                                    salt: Data,
                                    iterations: UInt32,
@@ -58,20 +58,19 @@ public enum ClusterAuth {
 
     // MARK: - High-level derivation API
 
-    /// Derive a 256-bit master key from a user passphrase and salt
-    /// using Argon2id with the RFC 9106 interactive-profile parameters.
-    //
-    // Naming note: the key returned here is currently used both as the
-    // onboarding credential (proves the caller knows the passphrase)
-    // and as the working cluster key for session-key derivation. Once
-    // the coordinator generates a random working key at cluster
-    // creation and transmits it to joining nodes over the authenticated
-    // channel, the passphrase-derived value becomes a handshake
-    // credential only — distinct from the working key — and this
-    // function is to be renamed deriveHandshakeKey. The rename is
-    // deferred until there are two keys in the code so the name always
-    // matches current behavior.
-    public static func deriveMasterKey(passphrase: String, salt: Data) -> Data {
+    /// Derive a 32-byte handshake credential from the user's cluster
+    /// passphrase using Argon2id with the RFC 9106 interactive-profile
+    /// parameters. This value is used to HMAC the cluster-join handshake
+    /// protocol's messages so both sides can prove they hold the
+    /// passphrase, and to derive the ephemeral session key that seals the
+    /// working cluster key in transit.
+    ///
+    /// The handshake key is distinct from the working cluster key — the
+    /// coordinator generates a fresh random working key at cluster
+    /// creation and transmits it to joining nodes over the authenticated
+    /// channel. Downstream session-key derivation and rotation use the
+    /// working key, not the handshake key.
+    public static func deriveHandshakeKey(passphrase: String, salt: Data) -> Data {
         return argon2idRaw(passphrase: passphrase,
                            salt: salt,
                            iterations: defaultIterations,
