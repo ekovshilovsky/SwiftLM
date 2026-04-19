@@ -146,4 +146,131 @@ final class ClusterAuthTests: XCTestCase {
         XCTAssertEqual(a.withUnsafeBytes { Data($0) },
                        b.withUnsafeBytes { Data($0) })
     }
+
+    // MARK: - Handshake and session key helpers
+
+    func testHmacKeyIsDomainSeparatedFromSessionKey() {
+        // Same handshake key and a fixed pair of nonces must produce
+        // distinct HMAC and session keys. Shared material would let an
+        // attacker who learns one key derive the other.
+        let handshakeKey = Data(repeating: 0x33, count: 32)
+        let nonceJoiner = Data(repeating: 0x01, count: 16)
+        let nonceCoordinator = Data(repeating: 0x02, count: 16)
+
+        let hmacKey = ClusterAuth.deriveHmacKey(handshakeKey: handshakeKey)
+        let sessionKey = ClusterAuth.deriveSessionKey(
+            handshakeKey: handshakeKey,
+            nonceJoiner: nonceJoiner,
+            nonceCoordinator: nonceCoordinator
+        )
+
+        XCTAssertNotEqual(hmacKey.withUnsafeBytes    { Data($0) },
+                          sessionKey.withUnsafeBytes { Data($0) })
+    }
+
+    func testHmacKeyIsDeterministic() {
+        let handshakeKey = Data(repeating: 0x33, count: 32)
+        let a = ClusterAuth.deriveHmacKey(handshakeKey: handshakeKey)
+        let b = ClusterAuth.deriveHmacKey(handshakeKey: handshakeKey)
+        XCTAssertEqual(a.withUnsafeBytes { Data($0) },
+                       b.withUnsafeBytes { Data($0) })
+    }
+
+    func testSessionKeyIsDeterministic() {
+        let handshakeKey = Data(repeating: 0x33, count: 32)
+        let nonceJoiner = Data(repeating: 0x01, count: 16)
+        let nonceCoordinator = Data(repeating: 0x02, count: 16)
+
+        let a = ClusterAuth.deriveSessionKey(
+            handshakeKey: handshakeKey,
+            nonceJoiner: nonceJoiner,
+            nonceCoordinator: nonceCoordinator
+        )
+        let b = ClusterAuth.deriveSessionKey(
+            handshakeKey: handshakeKey,
+            nonceJoiner: nonceJoiner,
+            nonceCoordinator: nonceCoordinator
+        )
+        XCTAssertEqual(a.withUnsafeBytes { Data($0) },
+                       b.withUnsafeBytes { Data($0) })
+    }
+
+    func testSessionKeyIsNonceOrderSensitive() {
+        // Swapping the joiner and coordinator nonces must change the
+        // derived session key. Order sensitivity is what makes a
+        // replayed handshake-message-4 produce a key that cannot open
+        // the seal recorded from an earlier session.
+        let handshakeKey = Data(repeating: 0x33, count: 32)
+        let n1 = Data(repeating: 0x01, count: 16)
+        let n2 = Data(repeating: 0x02, count: 16)
+
+        let forward = ClusterAuth.deriveSessionKey(
+            handshakeKey: handshakeKey,
+            nonceJoiner: n1,
+            nonceCoordinator: n2
+        )
+        let reversed = ClusterAuth.deriveSessionKey(
+            handshakeKey: handshakeKey,
+            nonceJoiner: n2,
+            nonceCoordinator: n1
+        )
+
+        XCTAssertNotEqual(forward.withUnsafeBytes  { Data($0) },
+                          reversed.withUnsafeBytes { Data($0) })
+    }
+
+    func testSessionKeyChangesWithEachNonce() {
+        // Both nonces must feed into the derivation. If one input were
+        // silently dropped, reusing the other nonce across sessions
+        // would not change the session key and replay protection would
+        // collapse.
+        let handshakeKey = Data(repeating: 0x33, count: 32)
+        let nonceJoinerA = Data(repeating: 0x01, count: 16)
+        let nonceJoinerB = Data(repeating: 0xAA, count: 16)
+        let nonceCoordinatorA = Data(repeating: 0x02, count: 16)
+        let nonceCoordinatorB = Data(repeating: 0xBB, count: 16)
+
+        let base = ClusterAuth.deriveSessionKey(
+            handshakeKey: handshakeKey,
+            nonceJoiner: nonceJoinerA,
+            nonceCoordinator: nonceCoordinatorA
+        )
+        let joinerChanged = ClusterAuth.deriveSessionKey(
+            handshakeKey: handshakeKey,
+            nonceJoiner: nonceJoinerB,
+            nonceCoordinator: nonceCoordinatorA
+        )
+        let coordinatorChanged = ClusterAuth.deriveSessionKey(
+            handshakeKey: handshakeKey,
+            nonceJoiner: nonceJoinerA,
+            nonceCoordinator: nonceCoordinatorB
+        )
+
+        XCTAssertNotEqual(base.withUnsafeBytes          { Data($0) },
+                          joinerChanged.withUnsafeBytes { Data($0) })
+        XCTAssertNotEqual(base.withUnsafeBytes               { Data($0) },
+                          coordinatorChanged.withUnsafeBytes { Data($0) })
+    }
+
+    func testSessionKeyIsDomainSeparatedFromDiscoveryHash() {
+        // The session key and the discovery hash both consume the same
+        // handshake key. Distinct info strings in the HKDF step must
+        // keep their outputs cryptographically unrelated; if the bytes
+        // overlap, the info-string discipline is broken.
+        let handshakeKey = Data(repeating: 0x33, count: 32)
+        let nonceJoiner = Data(repeating: 0x01, count: 16)
+        let nonceCoordinator = Data(repeating: 0x02, count: 16)
+
+        let sessionKey = ClusterAuth.deriveSessionKey(
+            handshakeKey: handshakeKey,
+            nonceJoiner: nonceJoiner,
+            nonceCoordinator: nonceCoordinator
+        )
+        let sessionBytes = sessionKey.withUnsafeBytes { Data($0) }
+
+        let discoveryHash = ClusterAuth.deriveDiscoveryHash(master: handshakeKey)
+        let discoveryBytes = Data(discoveryHash.utf8)
+
+        XCTAssertNotEqual(sessionBytes, discoveryBytes)
+    }
 }

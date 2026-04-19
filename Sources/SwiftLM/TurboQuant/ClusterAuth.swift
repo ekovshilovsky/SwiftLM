@@ -93,6 +93,39 @@ public enum ClusterAuth {
         )
     }
 
+    /// Derive the HMAC key used to authenticate handshake messages
+    /// between the coordinator and a joining node. The HMAC key is
+    /// domain-separated from the session key and from any other
+    /// purpose-specific subkey via the HKDF `info` parameter, so
+    /// observing HMACs never leaks material that could be used to
+    /// decrypt a session.
+    public static func deriveHmacKey(handshakeKey: Data) -> SymmetricKey {
+        return deriveSubkey(master: handshakeKey,
+                            info: "tq-handshake-hmac",
+                            length: 32)
+    }
+
+    /// Derive the session key used to seal the working cluster key for
+    /// in-transit delivery to a joining node. Both nonces are mixed into
+    /// the HKDF salt in joiner-then-coordinator order so replaying a
+    /// captured message against a fresh handshake produces a different
+    /// session key and the AES-GCM seal fails to open.
+    public static func deriveSessionKey(
+        handshakeKey: Data,
+        nonceJoiner: Data,
+        nonceCoordinator: Data
+    ) -> SymmetricKey {
+        var salt = Data()
+        salt.append(nonceJoiner)
+        salt.append(nonceCoordinator)
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: handshakeKey),
+            salt: salt,
+            info: Data("tq-session".utf8),
+            outputByteCount: 32
+        )
+    }
+
     /// Derive the 8-hex-character discovery hash advertised in the
     /// Bonjour TXT `cluster` field. Peers compare their own locally
     /// derived hash against the advertised value; mismatching hashes
