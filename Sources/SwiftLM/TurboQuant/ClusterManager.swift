@@ -160,7 +160,8 @@ public actor ClusterManager {
                 // .ready can stall under load.
                 Task {
                     let endpoint = NWConnectionHandshakeEndpoint(
-                        connection: connection
+                        connection: connection,
+                        alreadyStarted: true
                     )
                     do {
                         try await endpoint.waitReady()
@@ -348,17 +349,38 @@ final class NWConnectionHandshakeEndpoint: ClusterHandshakeEndpoint, @unchecked 
 
     let connection: NWConnection
     private let queue = DispatchQueue(label: "turboquant.cluster.handshake.endpoint")
+    private let alreadyStarted: Bool
 
-    init(connection: NWConnection) {
+    init(connection: NWConnection, alreadyStarted: Bool = false) {
         self.connection = connection
+        self.alreadyStarted = alreadyStarted
     }
 
-    /// Start the connection and await transition to `.ready`. If the
-    /// connection was already started (coordinator-accept path:
-    /// BonjourService starts inbound connections before yielding
-    /// them) and is already ready, the call returns immediately.
-    /// Subsequent calls are also idempotent — useful because
-    /// send / recv do not themselves block on `.ready`.
+    /// Install the connection's state update handler and await the
+    /// transition to `.ready`. Two distinct ownership cases:
+    ///
+    ///  - Joiner (outbound) path: the adapter owns the connection and
+    ///    is responsible for starting it. `alreadyStarted` is false;
+    ///    the handler is installed first, then `start(queue:)` is
+    ///    invoked exactly once.
+    ///
+    ///  - Coordinator (inbound) path: BonjourService has already
+    ///    called `start(queue:)` on the connection on its own internal
+    ///    queue before yielding it. `NWConnection.start` is one-shot
+    ///    and calling it again — especially with a different queue —
+    ///    is undefined, so this path must not start the connection a
+    ///    second time. `alreadyStarted` is true; the handler is
+    ///    installed onto the running connection.
+    ///
+    /// In both cases the handler is installed before any start call,
+    /// so the normal `.setup` → `.preparing` → `.ready` transitions
+    /// will fire the handler. For the coordinator path the connection
+    /// may have already reached a terminal state before the handler
+    /// was installed (NWConnection does not guarantee handler
+    /// replay), so after installation the current state is consulted
+    /// inline and the continuation is resolved directly when it is
+    /// already terminal. `ContinuationBox` is idempotent so any
+    /// subsequent real state callback is a no-op.
     func waitReady() async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             // Capture `continuation resolved` state so the handler
@@ -377,12 +399,32 @@ final class NWConnectionHandshakeEndpoint: ClusterHandshakeEndpoint, @unchecked 
                     break
                 }
             }
-            // If the connection has already been started elsewhere
-            // (coordinator path) start is a no-op on most NW states
-            // and returns without mutating anything; double-start
-            // with .setup -> .preparing -> .ready is the typical
-            // joiner flow.
-            connection.start(queue: queue)
+
+            // Only start the connection when the adapter owns it.
+            // Starting a connection that is already running (and on a
+            // different queue) is undefined per NWConnection's
+            // contract.
+            if !alreadyStarted {
+                connection.start(queue: queue)
+            }
+
+            // Cover the race where the connection reached a terminal
+            // state before the handler above was installed. Use
+            // pattern matching rather than `==` because
+            // `NWConnection.State` is not reliably `Equatable` across
+            // SDK versions. `ContinuationBox.tryResume` is idempotent
+            // so if a real state callback fires afterwards it becomes
+            // a no-op.
+            switch connection.state {
+            case .ready:
+                box.tryResume(returning: ())
+            case .failed(let err):
+                box.tryResume(throwing: ClusterManagerError.connectionFailed(err))
+            case .cancelled:
+                box.tryResume(throwing: ClusterManagerError.connectionCancelled)
+            default:
+                break
+            }
         }
     }
 
