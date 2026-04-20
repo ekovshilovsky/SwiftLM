@@ -268,6 +268,52 @@ final class ClusterManagerTests: XCTestCase {
         let joinerStoredRecord = try fx.joinerStore.load()
         XCTAssertEqual(joinerStoredRecord, joinerRecord)
     }
+
+    // MARK: - Shutdown
+
+    /// After `stop()` the manager must refuse subsequent create or
+    /// join calls so callers cannot accidentally drive a torn-down
+    /// instance. The shutdown also cancels the coordinator's accept
+    /// loop and stops the BonjourService, so a second call to
+    /// `stop()` is a no-op rather than an error — idempotency matters
+    /// for the CLI signal-handler path in Task 12c.
+    func testStopIsTerminalAndIdempotent() async throws {
+        let fx = makeFixture()
+
+        let passphrase = "correct-horse-battery-staple"
+
+        do {
+            _ = try await fx.coordinator.createCluster(
+                passphrase: passphrase,
+                clusterName: nil
+            )
+        } catch {
+            throw XCTSkip("createCluster failed — mDNSResponder or loopback listener likely unavailable: \(error)")
+        }
+
+        await fx.coordinator.stop()
+        await fx.coordinator.stop()  // second call must be a no-op
+
+        do {
+            _ = try await fx.coordinator.createCluster(
+                passphrase: passphrase,
+                clusterName: nil
+            )
+            XCTFail("createCluster must throw after stop()")
+        } catch let err as ClusterManagerError {
+            if case .managerStopped = err {
+                // expected
+            } else {
+                XCTFail("expected .managerStopped, got \(err)")
+            }
+        } catch {
+            XCTFail("expected ClusterManagerError.managerStopped, got \(error)")
+        }
+
+        // Joiner side was never started; call stop on it for
+        // completeness — still must not throw.
+        await fx.joiner.stop()
+    }
 }
 
 #endif // DEBUG

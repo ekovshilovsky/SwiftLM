@@ -52,15 +52,17 @@ public actor ClusterManager {
     private var record: ClusterRecord?
 
     /// Task running the coordinator accept loop for any inbound join
-    /// attempts. Started by `createCluster(...)`. Lifecycle is
-    /// currently bounded by the injected `BonjourService`: when a
-    /// caller invokes `bonjour.stop()` the underlying
-    /// `incomingConnections()` stream is finished, so this `for await`
-    /// loop exits and the Task completes. Actor deinit cannot `await`
-    /// and therefore cannot cancel the task on its own; Task 12c will
-    /// add a structured `stop()` on the manager alongside the CLI
-    /// shutdown path.
+    /// attempts. Started by `createCluster(...)` and cancelled by
+    /// `stop()`. The underlying `for await connection in incoming`
+    /// loop also exits when the injected `BonjourService` finishes
+    /// the `incomingConnections()` stream, so either path tears the
+    /// loop down cleanly.
     private var coordinatorAcceptTask: Task<Void, Never>?
+
+    /// Set to true after `stop()` has been invoked so the manager
+    /// refuses to start a second create / join flow. Construct a new
+    /// manager instance to re-enter the cluster lifecycle.
+    private var stopped: Bool = false
 
     /// Set to true after the underlying BonjourService has been
     /// started. Guards against a second start on repeated
@@ -107,6 +109,9 @@ public actor ClusterManager {
         passphrase: String,
         clusterName: String?
     ) async throws -> ClusterRecord {
+        guard !stopped else {
+            throw ClusterManagerError.managerStopped
+        }
         // `clusterName` is accepted in the public signature to keep
         // the CLI layer (Task 12c) free to pass a user-visible label
         // through without a signature change later. It is deliberately
@@ -207,6 +212,9 @@ public actor ClusterManager {
         passphrase: String,
         peer: DiscoveredPeer
     ) async throws -> ClusterRecord {
+        guard !stopped else {
+            throw ClusterManagerError.managerStopped
+        }
         guard let clusterIdString = peer.info.clusterId,
               let uuid = UUID(uuidString: clusterIdString) else {
             throw ClusterManagerError.peerMissingClusterId
@@ -257,6 +265,30 @@ public actor ClusterManager {
         bonjour.setLocalClusterHash(discoveryHash)
 
         return record
+    }
+
+    // MARK: - Shutdown
+
+    /// Release all resources this manager owns: cancels the
+    /// coordinator accept loop (if one was started by
+    /// `createCluster(...)`) and stops the injected `BonjourService`,
+    /// which tears down the underlying `NWListener` and `NWBrowser`
+    /// and finishes the `peers()` and `incomingConnections()` async
+    /// streams.
+    ///
+    /// Idempotent — calling `stop()` twice is safe. After `stop()`
+    /// the manager is terminal: further `createCluster` or
+    /// `joinCluster` calls throw `ClusterManagerError.managerStopped`.
+    /// Callers that need to re-enter the lifecycle must construct a
+    /// fresh `ClusterManager` with a fresh `BonjourService` (the
+    /// stopped service cannot be restarted either).
+    public func stop() {
+        guard !stopped else { return }
+        stopped = true
+        coordinatorAcceptTask?.cancel()
+        coordinatorAcceptTask = nil
+        bonjour.stop()
+        bonjourStarted = false
     }
 
     // MARK: - Peer discovery
@@ -331,6 +363,11 @@ public enum ClusterManagerError: Error, CustomStringConvertible {
     /// shutdown path, not a transport fault.
     case connectionCancelled
 
+    /// `createCluster` or `joinCluster` was invoked after `stop()`.
+    /// The manager is terminal once stopped; callers must construct
+    /// a fresh instance to re-enter the cluster lifecycle.
+    case managerStopped
+
     public var description: String {
         switch self {
         case .peerMissingClusterId:
@@ -341,6 +378,8 @@ public enum ClusterManagerError: Error, CustomStringConvertible {
             return "ClusterManager: NWConnection failed — \(err.map(String.init(describing:)) ?? "unknown")"
         case .connectionCancelled:
             return "ClusterManager: NWConnection was cancelled before the handshake completed"
+        case .managerStopped:
+            return "ClusterManager: operation attempted after stop() — construct a new instance"
         }
     }
 }
