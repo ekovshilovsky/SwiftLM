@@ -1,5 +1,43 @@
 # TurboQuant test suite notes
 
+## Upstream regression tests
+
+`Integration/UpstreamRegressionTests.swift` guards the behaviors that
+upstream SwiftLM depends on: CLI flag surface, standard model
+loading path, the three HTTP endpoints (`/health`, `/v1/models`,
+`/v1/chat/completions`), and the prompt KV cache.
+
+Two tests run on every `swift test` invocation:
+- `testExistingCLIFlagsStillAccepted` spawns `SwiftLM --help` and
+  asserts each upstream-documented flag is still in the output.
+- `testStandardModelLoadingStillWorks` spawns
+  `SwiftLM --model <synthesized dir> --info` against a fabricated
+  minimal `config.json` and asserts the partition plan renders. No
+  weights required.
+
+Two tests opt in via an environment variable:
+- `testExistingAPIEndpointsUnchanged` and
+  `testExistingKVCacheStillWorks` launch a real server subprocess
+  against a local model and validate the OpenAI-compatible
+  response shapes. To enable them:
+
+  ```bash
+  swift build --product SwiftLM
+  SWIFTLM_TEST_MODEL=/path/to/local/mlx-model swift test \
+    --filter UpstreamRegressionTests
+  ```
+
+  Without `SWIFTLM_TEST_MODEL` set, those two tests XCTSkip with a
+  message pointing to this README. The default contributor
+  workflow stays hermetic.
+
+Both groups also require `SwiftLM` to be built (`swift build --product
+SwiftLM`); `swift test` does not build executable targets
+automatically and the tests XCTSkip cleanly if the binary is
+missing.
+
+
+
 ## KeychainClusterKeyStore — tested via mocked `SecItemClient`
 
 `KeychainClusterKeyStore` wraps macOS's data-protection Keychain
