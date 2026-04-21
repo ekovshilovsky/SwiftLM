@@ -1,65 +1,119 @@
-// KeychainClusterKeyStore tests. These exercise the real macOS data-
-// protection Keychain via Security.framework. They run for real under
-// an entitled test host (Xcode with a Developer ID signed test target)
-// and skip cleanly under `swift test`, where the default xctest host
-// has no `keychain-access-groups` entitlement and every call returns
-// OSStatus -34018 (errSecMissingEntitlement).
+// KeychainClusterKeyStore tests. The store talks to the macOS
+// data-protection Keychain via Security.framework in production;
+// making those calls under plain `swift test` returns
+// errSecMissingEntitlement (-34018) because the xctest host cannot
+// carry the `keychain-access-groups` entitlement that macOS's
+// restricted-entitlement enforcement requires.
 //
-// The skip is not a workaround for a bad test — it reflects a platform
-// constraint: macOS checks Keychain access against the host process's
-// code signature, which for `swift test` is Apple's ad-hoc-signed
-// xctest binary that cannot be modified without breaking Xcode. Real
-// coverage of this path requires an entitled Level 2 test host.
+// These tests substitute a recording fake for the `SecItemClient`
+// dependency, which lets us exercise every branch of the save /
+// load / delete logic without any Keychain access at all. That
+// covers the code we wrote; what the live Keychain would contribute
+// on top of the fake ("does Apple's SecItem* behave as documented")
+// is Apple's test, not ours.
 //
-// Each run uses a unique service name so concurrent or re-run tests
-// cannot pollute one another; `delete()` in tearDown keeps the host
-// Keychain clean regardless of individual test outcomes.
+// If you want to verify against the real Keychain on a development
+// machine, see tests/SwiftLMTests/TurboQuant/README.md for the
+// codesign recipe.
+
+#if DEBUG
 
 import XCTest
-import TurboQuantKit
+import Security
+@testable import TurboQuantKit
 
-final class ClusterKeyStoreTests: XCTestCase {
-    private var store: KeychainClusterKeyStore!
+// MARK: - Recording fake
 
-    /// OSStatus errSecMissingEntitlement. Returned by data-protection
-    /// Keychain calls when the calling process lacks
-    /// `keychain-access-groups` in its code signature.
-    private static let errSecMissingEntitlement: OSStatus = -34018
+/// In-memory `SecItemClient` that mirrors the real SecItem semantics
+/// the store relies on: uniqueness keyed on `(service, account)`,
+/// `errSecItemNotFound` when the key is absent, `errSecDuplicateItem`
+/// when adding over an existing row, `errSecSuccess` otherwise. Every
+/// call is recorded so tests can assert on the query attributes the
+/// store emitted (access group presence, data-protection flag, etc.)
+/// rather than only on end-to-end behavior.
+private final class RecordingSecItemClient: SecItemClient, @unchecked Sendable {
+    private let lock = NSLock()
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
-
-        // Unique per-test-run service. Access group matches the
-        // entitlements plist embedded into the xctest bundle via
-        // Package.swift linker flags (__TEXT __entitlements); the
-        // group only takes effect when the host process signature
-        // carries the same group (Level 2 test runs).
-        let suffix = UUID().uuidString.prefix(8)
-        store = KeychainClusterKeyStore(
-            service: "com.turboquant.cluster.test.\(suffix)",
-            accessGroup: "com.turboquant.cluster.test")
-
-        // Probe once: if the host can't talk to the data-protection
-        // Keychain, skip the entire test case rather than surface every
-        // test as a failure. One probe covers all test methods.
-        do {
-            _ = try store.load()
-        } catch let ClusterKeyStoreError.unexpectedStatus(status)
-            where status == Self.errSecMissingEntitlement {
-            throw XCTSkip(
-                "Data-protection Keychain is unavailable: host process lacks " +
-                "the keychain-access-groups entitlement (OSStatus -34018). " +
-                "Run these tests via Xcode with a signed test host to cover " +
-                "this code path."
-            )
-        }
+    struct Entry: Hashable {
+        let service: String
+        let account: String
     }
 
-    override func tearDown() {
-        // Best-effort cleanup; if the entitlement check failed in setUp
-        // the store may not have been used.
-        try? store?.delete()
-        super.tearDown()
+    private(set) var storage: [Entry: Data] = [:]
+    private(set) var copyMatchingCalls: [[String: Any]] = []
+    private(set) var addCalls: [[String: Any]] = []
+    private(set) var deleteCalls: [[String: Any]] = []
+
+    func copyMatchingData(_ query: [String: Any]) -> (OSStatus, Data?) {
+        lock.lock(); defer { lock.unlock() }
+        copyMatchingCalls.append(query)
+        guard let key = Self.key(for: query) else {
+            return (errSecParam, nil)
+        }
+        if let data = storage[key] {
+            return (errSecSuccess, data)
+        }
+        return (errSecItemNotFound, nil)
+    }
+
+    func add(_ attributes: [String: Any]) -> OSStatus {
+        lock.lock(); defer { lock.unlock() }
+        addCalls.append(attributes)
+        guard let key = Self.key(for: attributes),
+              let data = attributes[kSecValueData as String] as? Data else {
+            return errSecParam
+        }
+        if storage[key] != nil {
+            return errSecDuplicateItem
+        }
+        storage[key] = data
+        return errSecSuccess
+    }
+
+    func delete(_ query: [String: Any]) -> OSStatus {
+        lock.lock(); defer { lock.unlock() }
+        deleteCalls.append(query)
+        guard let key = Self.key(for: query) else {
+            return errSecParam
+        }
+        if storage.removeValue(forKey: key) != nil {
+            return errSecSuccess
+        }
+        return errSecItemNotFound
+    }
+
+    /// Inject a specific entry without going through the public API.
+    /// Used to simulate partial / corrupt states.
+    func seed(service: String, account: String, data: Data) {
+        lock.lock(); defer { lock.unlock() }
+        storage[Entry(service: service, account: account)] = data
+    }
+
+    private static func key(for query: [String: Any]) -> Entry? {
+        guard let service = query[kSecAttrService as String] as? String,
+              let account = query[kSecAttrAccount as String] as? String else {
+            return nil
+        }
+        return Entry(service: service, account: account)
+    }
+}
+
+// MARK: - Tests
+
+final class ClusterKeyStoreTests: XCTestCase {
+    private var secItem: RecordingSecItemClient!
+    private var store: KeychainClusterKeyStore!
+    private let service = "com.turboquant.cluster.test"
+    private let accessGroup = "com.turboquant.cluster.test"
+
+    override func setUp() {
+        super.setUp()
+        secItem = RecordingSecItemClient()
+        store = KeychainClusterKeyStore(
+            service: service,
+            accessGroup: accessGroup,
+            secItemClient: secItem
+        )
     }
 
     private func sampleRecord(
@@ -107,10 +161,142 @@ final class ClusterKeyStoreTests: XCTestCase {
         XCTAssertNil(try store.load())
     }
 
-    func testDeleteWhenNoRecordIsNotAnError() throws {
+    func testDeleteWhenNoRecordIsNotAnError() {
         // Idempotent cleanup path: calling delete on an empty store
         // must not throw. Callers rely on this for "ensure absent"
         // semantics without a prior probe.
         XCTAssertNoThrow(try store.delete())
     }
+
+    // MARK: - Query attributes the store emits
+
+    func testQueryCarriesServiceAndAccountNames() throws {
+        try store.save(sampleRecord())
+
+        // Save issues a delete-then-add per account; we get two
+        // delete calls (id + key) and two add calls.
+        XCTAssertEqual(secItem.deleteCalls.count, 2)
+        XCTAssertEqual(secItem.addCalls.count, 2)
+
+        let services = secItem.addCalls.compactMap {
+            $0[kSecAttrService as String] as? String
+        }
+        let accounts = secItem.addCalls.compactMap {
+            $0[kSecAttrAccount as String] as? String
+        }
+        XCTAssertEqual(Set(services), [service],
+                       "every add must carry the configured service name")
+        XCTAssertEqual(Set(accounts), ["cluster.id", "cluster.key"],
+                       "store must use exactly two account names")
+    }
+
+    func testAccessGroupIncludedInQueriesWhenConfigured() throws {
+        try store.save(sampleRecord())
+
+        for attributes in secItem.addCalls {
+            XCTAssertEqual(
+                attributes[kSecAttrAccessGroup as String] as? String,
+                accessGroup,
+                "add query must carry the configured access group"
+            )
+        }
+    }
+
+    func testAccessGroupOmittedWhenNil() throws {
+        let clientWithoutGroup = RecordingSecItemClient()
+        let storeWithoutGroup = KeychainClusterKeyStore(
+            service: service,
+            accessGroup: nil,
+            secItemClient: clientWithoutGroup
+        )
+        try storeWithoutGroup.save(sampleRecord())
+
+        for attributes in clientWithoutGroup.addCalls {
+            XCTAssertNil(
+                attributes[kSecAttrAccessGroup as String],
+                "when accessGroup is nil, the query must not carry kSecAttrAccessGroup"
+            )
+        }
+    }
+
+    func testQueryRequestsDataProtectionKeychain() throws {
+        try store.save(sampleRecord())
+        _ = try store.load()
+
+        // Every query the store builds must set
+        // kSecUseDataProtectionKeychain=true so it targets the
+        // per-app data-protection Keychain rather than the
+        // user-global login keychain.
+        for attributes in secItem.addCalls {
+            XCTAssertEqual(
+                attributes[kSecUseDataProtectionKeychain as String] as? Bool, true,
+                "add must opt into the data-protection Keychain"
+            )
+        }
+        for query in secItem.copyMatchingCalls {
+            XCTAssertEqual(
+                query[kSecUseDataProtectionKeychain as String] as? Bool, true,
+                "copyMatching must opt into the data-protection Keychain"
+            )
+        }
+    }
+
+    func testAddSetsAccessibleAfterFirstUnlockThisDeviceOnly() throws {
+        try store.save(sampleRecord())
+
+        for attributes in secItem.addCalls {
+            XCTAssertEqual(
+                attributes[kSecAttrAccessible as String] as? String,
+                kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String,
+                "the working key must be device-bound and unlocked-only"
+            )
+        }
+    }
+
+    // MARK: - Partial / corrupt state
+
+    func testPartialRecordIsTreatedAsAbsent() throws {
+        // Seed only the cluster id — simulate a crash between the
+        // two SecItemAdd calls a save issues. Load must return nil
+        // rather than return a half-populated record that would
+        // produce an Argon2 salt mismatch downstream.
+        secItem.seed(
+            service: service,
+            account: "cluster.id",
+            data: Data(repeating: 0xAA, count: 16)
+        )
+
+        XCTAssertNil(try store.load())
+    }
+
+    // MARK: - Error surfacing
+
+    func testUnexpectedStatusOnLoadThrows() {
+        // Stand up a client that always returns an unexpected status
+        // (here: errSecAuthFailed). The store should wrap it as
+        // ClusterKeyStoreError.unexpectedStatus rather than swallow.
+        final class FailingClient: SecItemClient, @unchecked Sendable {
+            func copyMatchingData(_ query: [String: Any]) -> (OSStatus, Data?) {
+                (errSecAuthFailed, nil)
+            }
+            func add(_ attributes: [String: Any]) -> OSStatus { errSecSuccess }
+            func delete(_ query: [String: Any]) -> OSStatus { errSecSuccess }
+        }
+
+        let failingStore = KeychainClusterKeyStore(
+            service: service,
+            accessGroup: accessGroup,
+            secItemClient: FailingClient()
+        )
+
+        XCTAssertThrowsError(try failingStore.load()) { error in
+            guard case ClusterKeyStoreError.unexpectedStatus(let status) = error else {
+                XCTFail("expected ClusterKeyStoreError.unexpectedStatus, got \(error)")
+                return
+            }
+            XCTAssertEqual(status, errSecAuthFailed)
+        }
+    }
 }
+
+#endif // DEBUG

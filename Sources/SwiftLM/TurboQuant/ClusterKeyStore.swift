@@ -78,28 +78,84 @@ public protocol ClusterKeyStore: Sendable {
     func delete() throws
 }
 
+/// Thin abstraction over Security.framework's `SecItem*` C API. The
+/// production implementation forwards directly to the system calls;
+/// tests substitute an in-memory recording fake so the save / load /
+/// delete logic in `KeychainClusterKeyStore` is exercisable under
+/// plain `swift test` without the `keychain-access-groups`
+/// entitlement (which macOS's data-protection Keychain requires and
+/// which ad-hoc-signed test binaries cannot carry).
+public protocol SecItemClient: Sendable {
+    /// Mirrors `SecItemCopyMatching` for the single specific shape
+    /// `KeychainClusterKeyStore` uses: `kSecReturnData = true`,
+    /// `kSecMatchLimit = kSecMatchLimitOne`. Returns the status and,
+    /// on `errSecSuccess`, the stored payload.
+    func copyMatchingData(_ query: [String: Any]) -> (OSStatus, Data?)
+
+    /// Mirrors `SecItemAdd`; the `kSecValueData` attribute in the
+    /// dictionary supplies the payload.
+    func add(_ attributes: [String: Any]) -> OSStatus
+
+    /// Mirrors `SecItemDelete`.
+    func delete(_ query: [String: Any]) -> OSStatus
+}
+
+/// Production `SecItemClient` that forwards to the live macOS
+/// Security framework. Used by default when constructing a
+/// `KeychainClusterKeyStore` without a test-supplied client.
+public struct SystemSecItemClient: SecItemClient {
+    public init() {}
+
+    public func copyMatchingData(_ query: [String: Any]) -> (OSStatus, Data?) {
+        var finalQuery = query
+        finalQuery[kSecReturnData as String] = true
+        finalQuery[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(finalQuery as CFDictionary, &result)
+        return (status, result as? Data)
+    }
+
+    public func add(_ attributes: [String: Any]) -> OSStatus {
+        return SecItemAdd(attributes as CFDictionary, nil)
+    }
+
+    public func delete(_ query: [String: Any]) -> OSStatus {
+        return SecItemDelete(query as CFDictionary)
+    }
+}
+
 /// macOS Keychain-backed implementation using the data-protection
 /// Keychain. Requires the calling binary to carry a matching
-/// `keychain-access-groups` entitlement; under `swift test` without an
-/// entitled host, every call returns `errSecMissingEntitlement`
-/// (OSStatus -34018) and callers should fall back to
-/// `FileClusterKeyStore`.
+/// `keychain-access-groups` entitlement; without one, every call
+/// returns `errSecMissingEntitlement` (OSStatus -34018). Under plain
+/// `swift test` the entitlement is unavailable (ad-hoc signing
+/// cannot carry restricted entitlements on modern macOS), so
+/// production callers should fall back to `FileClusterKeyStore` in
+/// unentitled environments.
 ///
 /// Two Keychain items per cluster record: one account for the cluster
-/// id, one for the master key, both under a shared service. A signed
+/// id, one for the working key, both under a shared service. A signed
 /// distribution build would override the access group with whatever
 /// team-prefixed value matches its own entitlement.
+///
+/// The `SecItemClient` dependency is injected so tests can substitute
+/// a recording fake and verify the query attributes without requiring
+/// any entitlement.
 public struct KeychainClusterKeyStore: ClusterKeyStore {
     public let service: String
     public let accessGroup: String?
+    private let secItem: SecItemClient
 
     private static let idAccount = "cluster.id"
     private static let keyAccount = "cluster.key"
 
     public init(service: String = "com.turboquant.cluster",
-                accessGroup: String? = "com.turboquant.cluster") {
+                accessGroup: String? = "com.turboquant.cluster",
+                secItemClient: SecItemClient = SystemSecItemClient()) {
         self.service = service
         self.accessGroup = accessGroup
+        self.secItem = secItemClient
     }
 
     private func baseQuery(account: String) -> [String: Any] {
@@ -137,15 +193,10 @@ public struct KeychainClusterKeyStore: ClusterKeyStore {
     }
 
     private func loadItem(account: String) throws -> Data? {
-        var query = baseQuery(account: account)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var result: AnyObject?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let (status, data) = secItem.copyMatchingData(baseQuery(account: account))
         switch status {
         case errSecSuccess:
-            return result as? Data
+            return data
         case errSecItemNotFound:
             return nil
         default:
@@ -157,7 +208,7 @@ public struct KeychainClusterKeyStore: ClusterKeyStore {
         // delete-then-add is clearer than add-with-fallback-to-update,
         // and saves happen at most once per cluster join — not a hot
         // path.
-        let deleteStatus = SecItemDelete(baseQuery(account: account) as CFDictionary)
+        let deleteStatus = secItem.delete(baseQuery(account: account))
         guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
             throw ClusterKeyStoreError.unexpectedStatus(deleteStatus)
         }
@@ -166,14 +217,14 @@ public struct KeychainClusterKeyStore: ClusterKeyStore {
         addQuery[kSecValueData as String] = data
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        let addStatus = secItem.add(addQuery)
         guard addStatus == errSecSuccess else {
             throw ClusterKeyStoreError.unexpectedStatus(addStatus)
         }
     }
 
     private func deleteItem(account: String) throws {
-        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
+        let status = secItem.delete(baseQuery(account: account))
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw ClusterKeyStoreError.unexpectedStatus(status)
         }
