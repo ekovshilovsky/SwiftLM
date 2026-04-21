@@ -68,8 +68,25 @@ jobs:
           echo "$CHANGELOG" > /tmp/changelog.txt
           echo "Generated changelog with $(echo "$CHANGELOG" | wc -l | tr -d ' ') entries"
 
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-release-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-release-
+
       - name: Build (Release)
-        run: ./build.sh
+        run: |
+          swift package resolve
+          swift build -c release
+
+      - name: Install MLX Metal library
+        run: |
+          python3 -m venv /tmp/mlx_venv
+          /tmp/mlx_venv/bin/pip install --quiet mlx
+          MLX_LIB=$(find /tmp/mlx_venv -name "mlx.metallib" | head -n 1)
+          cp "$MLX_LIB" .build/release/mlx.metallib
 
       - name: Verify binary
         run: |
@@ -81,12 +98,31 @@ jobs:
         run: |
           mkdir -p release
           cp .build/release/SwiftLM release/
-          cp .build/arm64-apple-macosx/release/mlx.metallib release/
+          cp .build/release/mlx.metallib release/
           cp LICENSE README.md release/
           cd release
           # Verify the tarball will be self-contained before archiving
           ls -lh
           tar -czvf ../SwiftLM-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz .
+          
+      - name: Build macOS DMG Wrapper
+        run: |
+          cd SwiftBuddy && python3 generate_xcodeproj.py
+          cd ..
+          xcodebuild clean build \
+            -project SwiftBuddy/SwiftBuddy.xcodeproj \
+            -scheme SwiftBuddy \
+            -destination "generic/platform=macOS" \
+            -configuration Release \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_ENTITLEMENTS="" \
+            CODE_SIGNING_ALLOWED=NO \
+            TARGET_BUILD_DIR="$RUNNER_TEMP/build" \
+            BUILT_PRODUCTS_DIR="$RUNNER_TEMP/build"
+          brew install create-dmg
+          chmod +x scripts/build_dmg.sh
+          ./scripts/build_dmg.sh "$RUNNER_TEMP/build/SwiftBuddy.app"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -116,13 +152,19 @@ jobs:
 
           ### Download
 
-          - [macOS Apple Silicon (arm64)](https://github.com/SharpAI/SwiftLM/releases/download/${{ steps.tag.outputs.name }}/SwiftLM-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz)
+          - **CLI Server**: [macOS Apple Silicon (arm64)](https://github.com/SharpAI/SwiftLM/releases/download/${{ steps.tag.outputs.name }}/SwiftLM-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz)
+          - **GUI Desktop App**: Download the attached `SwiftBuddy-macOS.dmg` below!
 
           ### Quick Start
           
-          Please refer to the [Getting Started](https://github.com/SharpAI/SwiftLM#getting-started) section in the README for full installation and usage instructions.
+          **For GUI Users (SwiftBuddy)**:
+          1. Download the attached DMG and open it.
+          2. Drag `SwiftBuddy.app` into your Applications folder natively or run directly.
+          3. When launched, click "Model Options" to select or download an MLX local model to chat with.
 
-          > **Note:** `mlx.metallib` is bundled in this archive. Keep it in the same directory as the `SwiftLM` binary — Metal GPU compute will fail if it is missing.
+          **For CLI Users (SwiftLM)**:
+          Please refer to the [Getting Started](https://github.com/SharpAI/SwiftLM#getting-started) section in the README.
+          > **Note:** `mlx.metallib` is bundled in the tar archive. Keep it in the same directory as the `SwiftLM` binary — Metal GPU compute will fail if it is missing.
           RELEASE_EOF
 
       - name: Create release
@@ -134,5 +176,6 @@ jobs:
           body_path: /tmp/release_notes.md
           files: |
             SwiftLM-${{ steps.tag.outputs.name }}-macos-arm64.tar.gz
+            output/*.dmg
           draft: false
           prerelease: false

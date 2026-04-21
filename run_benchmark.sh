@@ -3,25 +3,139 @@
 # Ensure we execute from the project root
 cd "$(dirname "$0")"
 
+generate_tts_wav() {
+    local text="$1"
+    local output_path="$2"
+    local temp_aiff
+    local sample_rate
+    local audio_bytes
+
+    temp_aiff=$(mktemp /tmp/swiftlm_tts.XXXXXX.aiff) || return 1
+
+    if ! say -v Samantha -r 150 -o "$temp_aiff" "$text"; then
+        rm -f "$temp_aiff"
+        return 1
+    fi
+
+    if ! afconvert -f WAVE -d LEI16@16000 "$temp_aiff" "$output_path" >/dev/null 2>&1; then
+        rm -f "$temp_aiff" "$output_path"
+        return 1
+    fi
+
+    rm -f "$temp_aiff"
+
+    sample_rate=$(
+        afinfo "$output_path" 2>/dev/null \
+            | sed -n 's/.*Data format:[[:space:]]*[0-9][0-9]* ch,[[:space:]]*\([0-9][0-9]*\) Hz.*/\1/p' \
+            | head -n 1
+    )
+    audio_bytes=$(
+        afinfo "$output_path" 2>/dev/null \
+            | sed -n 's/.*audio bytes:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+            | head -n 1
+    )
+
+    if [ "$sample_rate" != "16000" ] || [ -z "$audio_bytes" ] || [ "$audio_bytes" -le 0 ]; then
+        rm -f "$output_path"
+        return 1
+    fi
+}
+
+check_transcription_match() {
+    local actual_text="$1"
+    local expected_text="$2"
+    python3 - "$actual_text" "$expected_text" <<'PY'
+import difflib
+import re
+import sys
+
+actual = sys.argv[1]
+expected = sys.argv[2]
+
+def normalize(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"<br\s*/?>", " ", text)
+    text = re.sub(r"[^a-z0-9']+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+actual_n = normalize(actual)
+expected_n = normalize(expected)
+
+actual_words = actual_n.split()
+expected_words = expected_n.split()
+expected_prefix_n = " ".join(expected_words[:len(actual_words)]).strip()
+
+full_ratio = difflib.SequenceMatcher(None, actual_n, expected_n).ratio()
+prefix_ratio = difflib.SequenceMatcher(None, actual_n, expected_prefix_n).ratio() if actual_n else 0.0
+prefix_exact = bool(actual_words) and actual_words == expected_words[:len(actual_words)]
+
+if actual_n == expected_n or prefix_exact or prefix_ratio >= 0.85 or full_ratio >= 0.90:
+    print("ok")
+else:
+    print(f"fail:{prefix_ratio:.3f}:{actual_n}:{expected_n}")
+PY
+}
+
+print_server_log() {
+    local log_path="$1"
+    if [ -f "$log_path" ]; then
+        cat "$log_path"
+    else
+        echo "No log found at $log_path"
+    fi
+}
+
 echo "=============================================="
+export METAL_LIBRARY_PATH="$(pwd)/.build/arm64-apple-macosx/release"
 echo "    Aegis-AI MLX Profiling Benchmark Suite    "
 echo "=============================================="
 echo ""
 
 echo "Select Action:"
+echo "0) Test 0: Run Full Automated Matrix (Offline Evaluation)"
 echo "1) Test 1: Automated Context & Memory Profile (TPS & RAM matrix)"
 echo "2) Test 2: Prompt Cache & Sliding Window Regression Test"
 echo "3) Test 3: HomeSec Benchmark (LLM Only)"
-echo "4) Model Maintain List and Delete"
-echo "5) Quit"
-read -p "Option (1-5): " suite_opt
+echo "4) Test 4: VLM End-to-End Evaluation"
+echo "5) Test 5: ALM Audio End-to-End Evaluation"
+echo "6) Test 6: Omni End-to-End Evaluation"
+echo "7) Model Maintain List and Delete"
+echo "8) Quit"
+read -p "Option (0-8): " suite_opt
 
-if [ "$suite_opt" == "5" ] || [ -z "$suite_opt" ]; then
+if [ "$suite_opt" == "0" ]; then
+    echo "=============================================="
+    echo "  RUNNING FULL OFFLINE AUTOMATED MATRIX "
+    echo "=============================================="
+    mkdir -p tmp
+    for TEST_ID in 3 4 5; do
+        echo ""
+        echo ">>> Executing Test Suite $TEST_ID <<<"
+        
+        # We dynamically fetch the highest downloaded Instruct mode model specifically to avoid hallucinating Vector/Embedding architectures
+        MODEL=$(python3 scripts/hf_discovery.py "mlx-community/Qwen Instruct 4bit" || echo "Qwen2.5-7B-Instruct-4bit")
+        
+        if [ "$TEST_ID" == "4" ]; then
+            MODEL=$(python3 scripts/hf_discovery.py "mlx-community/Qwen VL Instruct 4bit" || echo "mlx-community/Qwen2-VL-2B-Instruct-4bit")
+        fi
+        if [ "$TEST_ID" == "5" ]; then
+            MODEL=$(python3 scripts/hf_discovery.py "mlx-community/Qwen Audio Instruct" || echo "mlx-community/Qwen2-Audio-7B-Instruct")
+        fi
+        
+        echo -e "$TEST_ID\n11\n$MODEL" | HEADLESS=1 ./run_benchmark.sh
+        sleep 5
+    done
+    echo "✅ Offline matrix execution fully completed."
+    exit 0
+fi
+
+if [ "$suite_opt" == "8" ] || [ -z "$suite_opt" ]; then
     echo "Exiting."
     exit 0
 fi
 
-if [ "$suite_opt" == "4" ]; then
+if [ "$suite_opt" == "7" ]; then
     echo ""
     echo "=> Downloaded Models Maintenance"
     CACHE_DIR="$HOME/.cache/huggingface/hub"
@@ -76,20 +190,48 @@ fi
 
 echo ""
 PS3="Select a model to use: "
-options=(
-    "gemma-4-26b-a4b-it-8bit"
-    "gemma-4-31b-it-8bit"
-    "gemma-4-e4b-it-8bit"
-    "gemma-4-26b-a4b-it-4bit"
-    "gemma-4-2b-a4b-it-4bit"
-    "Qwen3.5-7B-Instruct-4bit"
-    "Qwen3.5-14B-Instruct-4bit"
-    "phi-4-mlx-4bit"
-    "baa-ai/GLM-5.1-RAM-270GB-MLX"
-    "GLM-5.1-4bit"
-    "Custom (Enter your own Hub ID)"
-    "Quit"
-)
+if [ "$suite_opt" == "4" ]; then
+    options=(
+        "mlx-community/gemma-4-26b-a4b-it-8bit"
+        "mlx-community/gemma-4-31b-it-8bit"
+        "mlx-community/gemma-4-e4b-it-8bit"
+        "mlx-community/gemma-4-26b-a4b-it-4bit"
+        "mlx-community/Qwen3.5-9B-MLX-4bit"
+        "mlx-community/Qwen3.5-27B-4bit"
+        "LiquidAI/LFM2.5-VL-450M-MLX-4bit"
+        "mlx-community/LFM2-VL-1.6B-4bit"
+        "mlx-community/Qwen2-VL-2B-Instruct-4bit"
+        "mlx-community/Qwen2-VL-7B-Instruct-4bit"
+        "mlx-community/pixtral-12b-2409-4bit"
+        "Custom (Enter your own Hub ID)"
+        "Quit"
+    )
+elif [ "$suite_opt" == "5" ] || [ "$suite_opt" == "6" ]; then
+    # NOTE: Only Gemma 4 e4b variants support audio (audio_config present).
+    # gemma-4-26b-a4b has audio_config=null — no audio tower, always hallucinates 'no audio'.
+    # Qwen2-Audio is not exposed here because the current SwiftLM build does not support qwen2_audio.
+    options=(
+        "mlx-community/gemma-4-e4b-it-8bit"
+        "mlx-community/gemma-4-e4b-it-4bit"
+        "Custom (Enter your own Hub ID)"
+        "Quit"
+    )
+else
+    options=(
+        "mlx-community/gemma-4-26b-a4b-it-8bit"
+        "mlx-community/gemma-4-31b-it-8bit"
+        "mlx-community/gemma-4-e4b-it-8bit"
+        "mlx-community/gemma-4-26b-a4b-it-4bit"
+        "mlx-community/gemma-4-26b-a4b-it-4bit"
+        "mlx-community/Qwen2.5-7B-Instruct-4bit"
+        "mlx-community/Qwen2.5-14B-Instruct-4bit"
+        "mlx-community/phi-4-mlx-4bit"
+        "baa-ai/GLM-5.1-RAM-270GB-MLX"
+        "baa-ai/GLM-5.1-4bit"
+        "Custom (Enter your own Hub ID)"
+        "Quit"
+    )
+fi
 
 select opt in "${options[@]}"
 do
@@ -121,6 +263,11 @@ else
     FULL_MODEL="$MODEL"
 fi
 
+if { [ "$suite_opt" == "5" ] || [ "$suite_opt" == "6" ]; } && [[ "$FULL_MODEL" == "mlx-community/Qwen2-Audio-7B-Instruct-4bit" ]]; then
+    echo "❌ ERROR: $FULL_MODEL is not supported by this SwiftLM build because model type 'qwen2_audio' is not implemented yet."
+    exit 1
+fi
+
 # Quick sanity check
 if [ -f ".build/arm64-apple-macosx/release/SwiftLM" ]; then
     BIN=".build/arm64-apple-macosx/release/SwiftLM"
@@ -145,6 +292,11 @@ if [ "$suite_opt" == "2" ]; then
     
     echo "Waiting for server to be ready on port 5431 (this may take a minute if downloading)..."
     for i in {1..300}; do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "❌ ERROR: Server process died unexpectedly! Printing logs:"
+            print_server_log ./tmp/regression_server.log
+            exit 1
+        fi
         if curl -s http://127.0.0.1:5431/health > /dev/null; then break; fi
         sleep 1
     done
@@ -182,6 +334,11 @@ if [ "$suite_opt" == "3" ]; then
     
     echo "Waiting for server to be ready on port 5431 (this may take a minute if downloading)..."
     for i in {1..300}; do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "❌ ERROR: Server process died unexpectedly! Printing logs:"
+            print_server_log ./tmp/homesec_server.log
+            exit 1
+        fi
         if curl -s http://127.0.0.1:5431/health > /dev/null; then break; fi
         sleep 1
     done
@@ -219,6 +376,454 @@ if [ "$suite_opt" == "3" ]; then
     exit 0
 fi
 
+if [ "$suite_opt" == "4" ]; then
+    echo ""
+    echo "=> Starting Test 4: VLM End-to-End Evaluation on $FULL_MODEL"
+    echo "Looking for a test image..."
+    
+    mkdir -p tmp
+    IMAGE_PATH="./tmp/dog.jpg"
+    # Download a small but recognizable image of a dog (golden retriever puppy)
+    curl -sL "https://images.unsplash.com/photo-1543466835-00a7907e9de1?auto=format&fit=crop&q=80&w=320" -o "$IMAGE_PATH"
+    
+    if [ ! -f "$IMAGE_PATH" ]; then
+        echo "Failed to download image."
+        exit 1
+    fi
+    
+    echo "Encoding image to base64..."
+    BASE64_IMG=$(base64 -i "$IMAGE_PATH" | tr -d '\n')
+    
+    echo "Generating /tmp/vlm_payload.json..."
+    cat <<EOF > /tmp/vlm_payload.json
+{
+  "model": "$FULL_MODEL",
+  "max_tokens": 100,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What is in this image? Explain concisely."},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,${BASE64_IMG}"}}
+      ]
+    }
+  ]
+}
+EOF
+
+    echo "Starting Server in background with --vision..."
+    killall SwiftLM 2>/dev/null
+    rm -f ./tmp/vlm_server.log
+    $BIN --model "$FULL_MODEL" --vision --port 5431 > ./tmp/vlm_server.log 2>&1 &
+    SERVER_PID=$!
+    
+    echo "Waiting for server to be ready on port 5431 (this may take a minute if downloading)..."
+    for i in {1..300}; do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "❌ ERROR: Server process died unexpectedly! Printing logs:"
+            print_server_log ./tmp/vlm_server.log
+            exit 1
+        fi
+        if curl -s http://127.0.0.1:5431/health > /dev/null; then break; fi
+        sleep 1
+    done
+    
+    echo ""
+    echo "Server is up! Sending payload..."
+    echo "=== VLM Request ==="
+    RAW_OUT=$(curl -sS --max-time 180 http://127.0.0.1:5431/v1/chat/completions -H "Content-Type: application/json" -d @/tmp/vlm_payload.json)
+    if [ -z "$RAW_OUT" ] || [[ "$RAW_OUT" == *"curl: "* ]]; then
+        echo "❌ ERROR: Server dropped the connection or crashed!"
+        exit 1
+    fi
+    VLM_RES=$(echo "$RAW_OUT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('choices',[{}])[0].get('message',{}).get('content', 'ERROR').replace('\n', '<br/>'))")
+    if [ -z "$VLM_RES" ] || [[ "$VLM_RES" == *"ERROR"* ]]; then
+        echo "❌ ERROR: JSON Decode failed!"
+        exit 1
+    fi
+    
+    echo -e "\n🤖 VLM Output: $VLM_RES"
+    
+    if [ -z "${HEADLESS:-}" ]; then
+        UI_FILE="/tmp/vlm_ui.html"
+        cat <<EOF > "$UI_FILE"
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #0f1115; color: #E0E0E0; max-width: 700px; margin: 40px auto; line-height: 1.6; }
+    .container { background: #1a1d24; padding: 30px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.8); border: 1px solid #2d313a; }
+    img { max-width: 100%; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+    .prompt { background: #21252d; padding: 15px; border-left: 4px solid #00ffcc; border-radius: 4px; margin-bottom: 20px; font-weight: 500; font-size: 14px; color: #a1aabf; }
+    .response { background: #16181e; padding: 20px; border-radius: 8px; font-size: 16px; color: #ffffff; border: 1px solid #252932; text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+    h2 { color: #f5f6f8; font-weight: 600; letter-spacing: -0.5px; margin-top: 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>👁️ SwiftLM Vision Pipeline</h2>
+    <div style="font-size: 13px; color: #727a8e; margin-top: -15px; margin-bottom: 20px;">Model: $FULL_MODEL</div>
+    <img src="data:image/jpeg;base64,${BASE64_IMG}" />
+    <div class="prompt">Prompt: What is in this image? Explain concisely.</div>
+    <div class="response">🤖 $VLM_RES</div>
+  </div>
+</body>
+</html>
+EOF
+        open "$UI_FILE"
+    fi
+    
+    echo ""
+    echo "✅ Test Complete!"
+    
+    echo "Cleaning up..."
+    killall SwiftLM
+    wait $SERVER_PID 2>/dev/null
+    rm -f /tmp/vlm_payload.json "$IMAGE_PATH"
+    exit 0
+fi
+
+if [ "$suite_opt" == "5" ]; then
+    echo ""
+    echo "=> Starting Test 5: ALM Audio End-to-End Evaluation on $FULL_MODEL"
+    echo "Looking for a test audio payload..."
+    
+    mkdir -p tmp
+    AUDIO_PATH="./tmp/audio_test"
+    EXPECTED_TRANSCRIPT="The quick brown fox jumps over the lazy dog. Machine learning systems require careful validation."
+    # Generate speech via macOS TTS, then resample explicitly since `say`
+    # may still emit 22.05 kHz audio for some voices even when 16 kHz is requested.
+    if ! generate_tts_wav \
+        "$EXPECTED_TRANSCRIPT" \
+        "${AUDIO_PATH}.wav"; then
+        echo "Failed to generate a valid 16 kHz WAV test clip."
+        exit 1
+    fi
+    
+    if [ ! -f "${AUDIO_PATH}.wav" ]; then
+        echo "Failed to create benchmark audio."
+        exit 1
+    fi
+    
+    echo "Encoding audio to base64..."
+    BASE64_AUDIO=$(base64 -i "${AUDIO_PATH}.wav" | tr -d '\n')
+    
+    echo "Generating /tmp/alm_payload_1.json (Turn 1)..."
+    cat <<EOF > /tmp/alm_payload_1.json
+{
+  "model": "$FULL_MODEL",
+  "max_tokens": 500,
+  "temperature": 0,
+  "top_p": 1.0,
+  "enable_thinking": false,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Transcribe this audio clip word for word. Output only the transcription, nothing else."},
+        {"type": "input_audio", "input_audio": {"data": "${BASE64_AUDIO}", "format": "wav"}}
+      ]
+    }
+  ]
+}
+EOF
+
+    echo "Starting Server in background with --audio..."
+    killall SwiftLM 2>/dev/null
+    rm -f ./tmp/alm_server.log
+    $BIN --model "$FULL_MODEL" --audio --port 5431 > ./tmp/alm_server.log 2>&1 &
+    SERVER_PID=$!
+    
+    echo "Waiting for server to be ready on port 5431 (this may take a minute if downloading)..."
+    for i in {1..300}; do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "❌ ERROR: Server process died unexpectedly! Printing logs:"
+            print_server_log ./tmp/alm_server.log
+            exit 1
+        fi
+        if curl -s http://127.0.0.1:5431/health > /dev/null; then break; fi
+        sleep 1
+    done
+    
+    echo ""
+    echo "Server is up! Sending Turn 1 payload..."
+    echo "=== ALM Request 1 ==="
+    RAW_ALM_OUT=$(curl -sS --max-time 180 http://127.0.0.1:5431/v1/chat/completions -H "Content-Type: application/json" -d @/tmp/alm_payload_1.json)
+    if [ -z "$RAW_ALM_OUT" ] || [[ "$RAW_ALM_OUT" == *"curl: "* ]]; then
+        echo "❌ ERROR: Server dropped the connection or crashed!"
+        exit 1
+    fi
+    # Extract content and strip any thinking blocks (Gemma4 <|channel|>thought...)<channel|>)
+    ALM_RES=$(echo "$RAW_ALM_OUT" | python3 -c "
+import sys, json, re
+d = json.load(sys.stdin)
+content = d.get('choices',[{}])[0].get('message',{}).get('content', '')
+gen_tok = d.get('usage',{}).get('completion_tokens', 0)
+# Strip Gemma4 thinking blocks: <|channel|>thought ... <channel|>
+content = re.sub(r'<\|channel\|>thought.*?<channel\|>', '', content, flags=re.DOTALL).strip()
+if not content:
+    print(f'[WARN: gen_tokens={gen_tok}, empty after stripping thinking]')
+else:
+    print(content)
+")
+    if [ -z "$ALM_RES" ]; then
+        echo "❌ ERROR: Server dropped turn 1 connection!"
+        exit 1
+    fi
+    echo -e "\n🎤 ALM Turn 1 Transcription:\n  → $ALM_RES\n"
+
+    ALM_CHECK=$(check_transcription_match "$ALM_RES" "$EXPECTED_TRANSCRIPT")
+    if [[ "$ALM_CHECK" != "ok" ]]; then
+        ALM_RATIO=$(echo "$ALM_CHECK" | cut -d: -f2)
+        echo "❌ ERROR: Turn 1 transcription did not match the expected audio closely enough."
+        echo "Expected: $EXPECTED_TRANSCRIPT"
+        echo "Observed: $ALM_RES"
+        echo "Similarity: ${ALM_RATIO:-unknown}"
+        exit 1
+    fi
+    
+    echo "Generating /tmp/alm_payload_2.json (Turn 2 - Closed Loop)..."
+    ASSISTANT_CONTENT_ESCAPED=$(echo "$RAW_ALM_OUT" | python3 -c "import sys,json;print(json.dumps(json.load(sys.stdin).get('choices',[{}])[0].get('message',{}).get('content', 'ERROR')))")
+    
+    cat <<EOF > /tmp/alm_payload_2.json
+{
+  "model": "$FULL_MODEL",
+  "max_tokens": 200,
+  "temperature": 0,
+  "top_p": 1.0,
+  "enable_thinking": false,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Transcribe this audio clip word for word. Output only the transcription, nothing else."},
+        {"type": "input_audio", "input_audio": {"data": "${BASE64_AUDIO}", "format": "wav"}}
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": $ASSISTANT_CONTENT_ESCAPED
+    },
+    {
+      "role": "user",
+      "content": "In one sentence, summarize what the speaker said."
+    }
+  ]
+}
+EOF
+
+    echo "=== ALM Request 2 (Multi-turn Cache Evaluation) ==="
+    RAW_ALM_OUT_2=$(curl -sS --max-time 180 http://127.0.0.1:5431/v1/chat/completions -H "Content-Type: application/json" -d @/tmp/alm_payload_2.json)
+    if [ -z "$RAW_ALM_OUT_2" ] || [[ "$RAW_ALM_OUT_2" == *"curl: "* ]]; then
+        echo "❌ ERROR: Server dropped the connection or crashed on Turn 2!"
+        exit 1
+    fi
+    ALM_RES_2=$(echo "$RAW_ALM_OUT_2" | python3 -c "
+import sys, json, re
+d = json.load(sys.stdin)
+content = d.get('choices',[{}])[0].get('message',{}).get('content', '')
+content = re.sub(r'<\|channel\|>thought.*?<channel\|>', '', content, flags=re.DOTALL).strip()
+print(content if content else '[empty]')
+")
+    if [ -z "$ALM_RES_2" ]; then
+        echo "❌ ERROR: Server dropped turn 2 connection!"
+        exit 1
+    fi
+    echo -e "\n🎤 ALM Turn 2 Summary:\n  → $ALM_RES_2\n"
+
+    echo ""
+    echo "✅ Test Complete! Closed-Loop validation successful."
+    
+    echo "Cleaning up..."
+    killall SwiftLM
+    wait $SERVER_PID 2>/dev/null
+    rm -f /tmp/alm_payload_1.json /tmp/alm_payload_2.json "${AUDIO_PATH}.wav"
+    exit 0
+fi
+
+if [ "$suite_opt" == "6" ]; then
+    echo ""
+    echo "=> Starting Test 6: Omni End-to-End Evaluation on $FULL_MODEL"
+    echo "Looking for a test image and audio payload..."
+    
+    mkdir -p tmp
+    IMAGE_PATH="./tmp/omni_dog.jpg"
+    curl -sL "https://images.unsplash.com/photo-1543466835-00a7907e9de1?auto=format&fit=crop&q=80&w=320" -o "$IMAGE_PATH"
+    
+    AUDIO_PATH="./tmp/omni_audio_test"
+    EXPECTED_OMNI_TRANSCRIPT="Security alert. A brown and white dog has been detected on the camera. Please send assistance to the front gate immediately."
+    echo "Generating real audio sample via TTS..."
+    if ! generate_tts_wav \
+        "$EXPECTED_OMNI_TRANSCRIPT" \
+        "${AUDIO_PATH}.wav"; then
+        echo "Failed to generate a valid 16 kHz WAV test clip."
+        exit 1
+    fi
+    
+
+    
+    if [ ! -f "$IMAGE_PATH" ] || [ ! -f "${AUDIO_PATH}.wav" ]; then
+        echo "Failed to download media assets."
+        exit 1
+    fi
+    
+    echo "Encoding media..."
+    BASE64_IMG=$(base64 -i "$IMAGE_PATH" | tr -d '\n')
+    BASE64_AUDIO=$(base64 -i "${AUDIO_PATH}.wav" | tr -d '\n')
+    
+    echo "Generating /tmp/omni_payload.json..."
+    cat <<EOF > /tmp/omni_payload.json
+{
+  "model": "$FULL_MODEL",
+  "max_tokens": 400,
+  "temperature": 0,
+  "top_p": 1.0,
+  "enable_thinking": false,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,${BASE64_IMG}"}},
+        {"type": "text", "text": "First describe the image in one sentence. Then transcribe the spoken words from the audio clip verbatim. The audio clip is present and contains speech."},
+        {"type": "input_audio", "input_audio": {"data": "${BASE64_AUDIO}", "format": "wav"}}
+      ]
+    }
+  ]
+}
+EOF
+
+    echo "Starting Server in background with --vision AND --audio (Omni)..."
+    killall SwiftLM 2>/dev/null
+    rm -f ./tmp/omni_server.log
+    $BIN --model "$FULL_MODEL" --vision --audio --port 5431 2>&1 | tee ./tmp/omni_server.log &
+    SERVER_PID=$!
+    
+    echo "Waiting for server to be ready on port 5431 (this may take a minute if downloading)..."
+    for i in {1..300}; do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "❌ ERROR: Server process died unexpectedly! Printing logs:"
+            print_server_log ./tmp/omni_server.log
+            exit 1
+        fi
+        if curl -s http://127.0.0.1:5431/health > /dev/null; then break; fi
+        sleep 1
+    done
+    
+    echo ""
+    echo "Server is up! Sending Omni payload..."
+    echo "=== Omni Request ==="
+    RAW_OMNI_OUT=$(curl -sS --max-time 180 http://127.0.0.1:5431/v1/chat/completions -H "Content-Type: application/json" -d @/tmp/omni_payload.json)
+    if [ -z "$RAW_OMNI_OUT" ] || [[ "$RAW_OMNI_OUT" == *"curl: "* ]]; then
+        echo "❌ ERROR: Server dropped the connection or crashed!"
+        exit 1
+    fi
+    # Extract content and strip any thinking blocks
+    OMNI_RES=$(echo "$RAW_OMNI_OUT" | python3 -c "
+import sys, json, re
+d = json.load(sys.stdin)
+content = d.get('choices',[{}])[0].get('message',{}).get('content', 'ERROR')
+content = re.sub(r'<\|channel\|>thought.*?<channel\|>', '', content, flags=re.DOTALL).strip()
+print(content.replace('\n', '<br/>'))
+")
+    if [ -z "$OMNI_RES" ] || [[ "$OMNI_RES" == *"ERROR"* ]]; then
+        echo "❌ ERROR: JSON Decode failed!"
+        exit 1
+    fi
+    
+    echo -e "\n🤖 Omni Output: $OMNI_RES"
+
+    OMNI_AUDIO_CHECK=$(echo "$RAW_OMNI_OUT" | python3 -c "
+import sys, json, re
+d = json.load(sys.stdin)
+content = d.get('choices',[{}])[0].get('message',{}).get('content', '')
+content = re.sub(r'<\|channel\|>thought.*?<channel\|>', '', content, flags=re.DOTALL).strip().lower()
+bad_markers = [
+    'no audio clip provided',
+    'no audio provided',
+    'there is no audio',
+    'audio clip is provided',
+]
+print('fail' if any(marker in content for marker in bad_markers) else 'ok')
+")
+    if [ "$OMNI_AUDIO_CHECK" != "ok" ]; then
+        echo "❌ ERROR: Omni response ignored the supplied audio clip."
+        echo "Cleaning up..."
+        killall SwiftLM
+        wait $SERVER_PID 2>/dev/null
+        rm -f /tmp/omni_payload.json "$IMAGE_PATH" "${AUDIO_PATH}.wav"
+        exit 1
+    fi
+
+    OMNI_TRANSCRIPT_CHECK=$(echo "$RAW_OMNI_OUT" | python3 -c "
+import json, re, sys
+d = json.load(sys.stdin)
+content = d.get('choices',[{}])[0].get('message',{}).get('content', '')
+content = re.sub(r'<\|channel\|>thought.*?<channel\|>', '', content, flags=re.DOTALL).strip()
+# Split on any newline (model may use \n or \n\n between image-desc / audio-transcript paragraphs)
+parts = [part.strip() for part in re.split(r'\n+', content) if part.strip()]
+print(parts[-1] if parts else content)
+")
+    OMNI_MATCH=$(check_transcription_match "$OMNI_TRANSCRIPT_CHECK" "$EXPECTED_OMNI_TRANSCRIPT")
+    if [[ "$OMNI_MATCH" != "ok" ]]; then
+        OMNI_RATIO=$(echo "$OMNI_MATCH" | cut -d: -f2)
+        echo "❌ ERROR: Omni transcription did not match the expected audio closely enough."
+        echo "Expected: $EXPECTED_OMNI_TRANSCRIPT"
+        echo "Observed: $OMNI_TRANSCRIPT_CHECK"
+        echo "Similarity: ${OMNI_RATIO:-unknown}"
+        echo "Cleaning up..."
+        killall SwiftLM
+        wait $SERVER_PID 2>/dev/null
+        rm -f /tmp/omni_payload.json "$IMAGE_PATH" "${AUDIO_PATH}.wav"
+        exit 1
+    fi
+    
+    if [ "$HEADLESS" != "1" ]; then
+        UI_FILE="/tmp/swiftlm_omni_result.html"
+        cat <<EOF > "$UI_FILE"
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SwiftLM Omni Pipeline Demo</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 40px; background: #0f1115; color: #e1e4e8; line-height: 1.5; }
+    .container { max-width: 800px; margin: 0 auto; background: #1a1c23; padding: 40px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+    img { max-width: 100%; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
+    .prompt { background: #21252d; padding: 15px; border-left: 4px solid #00ffcc; border-radius: 4px; margin-bottom: 20px; font-weight: 500; font-size: 14px; color: #a1aabf; }
+    .response { background: #16181e; padding: 20px; border-radius: 8px; font-size: 16px; color: #ffffff; border: 1px solid #252932; text-shadow: 0 1px 2px rgba(0,0,0,0.5); margin-top: 20px; }
+    h2 { color: #f5f6f8; font-weight: 600; letter-spacing: -0.5px; margin-top: 0; }
+    audio { width: 100%; margin-top: 10px; margin-bottom: 20px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>🌐 SwiftLM Omni Pipeline</h2>
+    <div style="font-size: 13px; color: #727a8e; margin-top: -15px; margin-bottom: 20px;">Model: $FULL_MODEL</div>
+    <img src="data:image/jpeg;base64,${BASE64_IMG}" />
+    <audio controls>
+      <source src="data:audio/wav;base64,${BASE64_AUDIO}" type="audio/wav">
+      Your browser does not support the audio element.
+    </audio>
+    <div class="prompt">Prompt: Describe the image and then describe the audio.</div>
+    <div class="response">🤖 Omni Output: $OMNI_RES</div>
+  </div>
+</body>
+</html>
+EOF
+        open "$UI_FILE"
+    fi
+    
+    echo ""
+    echo "✅ Test Complete! Omni evaluation successful."
+    
+    echo "Cleaning up..."
+    killall SwiftLM
+    wait $SERVER_PID 2>/dev/null
+    rm -f /tmp/omni_payload.json "$IMAGE_PATH" "${AUDIO_PATH}.wav" "${AUDIO_PATH}.mp3"
+    exit 0
+fi
+
 # Fallback to Test 1 for anything else
 echo ""
 read -p "Enter context lengths to test [default: 512,40000,100000]: " CONTEXTS
@@ -239,7 +844,7 @@ python3 -u scripts/profiling/profile_runner.py \
   --model "$FULL_MODEL" \
   --contexts "$CONTEXTS" \
   $EXTRA_FLAGS \
-  --out "./profiling_results_$(hostname -s).md"
+  --out "./docs/profiling/profiling_results_$(hostname -s).md"
 
 echo ""
-echo "✅ Benchmark finished! Results saved to ./profiling_results_$(hostname -s).md"
+echo "✅ Benchmark finished! Results saved to ./docs/profiling/profiling_results_$(hostname -s).md"

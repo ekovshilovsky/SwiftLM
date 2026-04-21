@@ -178,6 +178,7 @@ enum ModelProfiler {
         let numExperts: Int?
         let numExpertsPerTok: Int?
         let quantizationConfig: QuantConfig?
+        let textConfig: TextConfig?
 
         enum CodingKeys: String, CodingKey {
             case modelType = "model_type"
@@ -191,6 +192,27 @@ enum ModelProfiler {
             case numExperts = "num_local_experts"
             case numExpertsPerTok = "num_experts_per_tok"
             case quantizationConfig = "quantization_config"
+            case textConfig = "text_config"
+        }
+    }
+
+    private struct TextConfig: Decodable {
+        let numHiddenLayers: Int?
+        let hiddenSize: Int?
+        let numAttentionHeads: Int?
+        let numKeyValueHeads: Int?
+        let headDim: Int?
+        let intermediateSize: Int?
+        let vocabSize: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case numHiddenLayers = "num_hidden_layers"
+            case hiddenSize = "hidden_size"
+            case numAttentionHeads = "num_attention_heads"
+            case numKeyValueHeads = "num_key_value_heads"
+            case headDim = "head_dim"
+            case intermediateSize = "intermediate_size"
+            case vocabSize = "vocab_size"
         }
     }
 
@@ -218,13 +240,13 @@ enum ModelProfiler {
             return nil
         }
 
-        let numLayers = config.numHiddenLayers ?? 32
-        let hiddenSize = config.hiddenSize ?? 4096
-        let numHeads = config.numAttentionHeads ?? 32
-        let numKVHeads = config.numKeyValueHeads ?? numHeads
-        let headDim = config.headDim ?? (hiddenSize / numHeads)
-        let intermediateSize = config.intermediateSize ?? (hiddenSize * 4)
-        let vocabSize = config.vocabSize ?? 32000
+        let numLayers = config.numHiddenLayers ?? config.textConfig?.numHiddenLayers ?? 32
+        let hiddenSize = config.hiddenSize ?? config.textConfig?.hiddenSize ?? 4096
+        let numHeads = config.numAttentionHeads ?? config.textConfig?.numAttentionHeads ?? 32
+        let numKVHeads = config.numKeyValueHeads ?? config.textConfig?.numKeyValueHeads ?? numHeads
+        let headDim = config.headDim ?? config.textConfig?.headDim ?? (hiddenSize / numHeads)
+        let intermediateSize = config.intermediateSize ?? config.textConfig?.intermediateSize ?? (hiddenSize * 4)
+        let vocabSize = config.vocabSize ?? config.textConfig?.vocabSize ?? 32000
 
         // Detect quantization
         let quantBits = config.quantizationConfig?.bits ?? detectQuantBits(modelId: modelId)

@@ -80,9 +80,34 @@ Benchmark results for `gemma-4-26b-a4b-it-4bit` (26B MoE, 4-bit) on M5 Pro 64 GB
 - 🍎 **100% Native Apple Silicon**: Powered natively by Metal and Swift. 
 - 🔌 **OpenAI-compatible**: Drop-in replacement for OpenAI SDKs (`/v1/chat/completions`, streaming, etc).
 - 🧠 **Smart Model Routing**: Loads HuggingFace format models directly, with native Safetensors parsing.
+- 👁️ **Vision-Language Models (VLM)**: Native multimodal vision processing natively on Metal via the `--vision` flag, supporting real-time base64 image parsing (e.g., Qwen2-VL, PaliGemma).
+- 🎧 **Audio-Language Models (ALM)**: High-performance audio ingestion via the `--audio` flag, decoding OpenAI-spec `input_audio` payloads with AVFoundation WAV extraction.
 - ⚡️ **TurboQuantization Integrated**: Custom low-level MLX Metal primitives that apply extremely fast quantization for KV caching out-of-the-box.
-- 💾 **SSD Expert Streaming**: *Experimental* zero-copy streaming that swaps Mixture of Experts (MoE) layers directly from the NVMe SSD to the GPU command buffer without trashing macOS Unified Memory (prevents Watchdog OS kernel panics on 122B+ models).
+- 💾 **SSD Expert Streaming (10x)**: High-performance NVMe streaming that loads Mixture of Experts (MoE) layers directly from SSD to GPU — engineered by [@ericjlake](https://github.com/ericjlake), achieving **10x speedup** (0.58 → 5.91 tok/s) on 122B+ models with only ~10 GB resident memory. Uses cross-projection batching, concurrent pread (QD=24), asyncEval pipeline, and runtime top-k expert selection.
+- 🔮 **Speculative Decoding**: Load a small draft model (e.g. 9B) alongside a large main model to generate candidate tokens and verify in bulk — accelerating in-RAM inference.
 - 🎛️ **Granular Memory Control**: Integrated Layer Partitioning (`--gpu-layers`) and Wisdom Auto-Calibration for squeezing massive models into RAM.
+
+---
+
+## 🧠 Supported Models & Methodologies
+
+`SwiftLM` dynamically maps Apple MLX primitives to standard HuggingFace architectures, enabling complete support for the latest frontier open-weights models across modalities (Text, Vision, Audio).
+
+### Text (LLMs)
+- **Gemma 4**: Fully supports both Dense (`gemma-4-e4b`) and Sparse Mixture of Experts (MoE) architectures (`gemma-4-26b`, `gemma-4-31b`).
+- **Qwen 2.5 & 3**: Robust support for sliding window attention limits and custom RoPE scaling.
+- **Mistral & Mixtral**: Out-of-the-box structural mappings.
+- **Phi-3 & Phi-3.5**: Full 128k context parsing via Swift chunked-prefill.
+
+### Vision (VLMs)
+*Run with `--vision` flag.*
+- **Qwen2-VL & Qwen3-VL**: Real-time positional bounding and Metal image scaling.
+- **PaliGemma / LFM2-VL / Pixtral**: Base64 spatial decomposition.
+
+### Audio (ALMs)
+*Run with `--audio` flag.*
+- **Qwen2-Audio (7B-Instruct)**: Deep multi-modal spectrogram processing via Swift audio interleaving.
+- **Gemma-4 Audio Pipelines**: Ready for Audio-in/Text-out variants mapping `.audio_tower` extraction parameters natively off NVMe.
 
 ---
 
@@ -146,6 +171,76 @@ Reference implementations: [`turboquant-mlx`](https://github.com/sharpner/turboq
 
 ---
 
+## 💾 SSD Expert Streaming: 10x MoE Speedup
+
+SwiftLM implements a **rewritten SSD expert streaming pipeline** (engineered by [Eric Lake](https://github.com/ericjlake)) that achieves 10x generation speedup for massive Mixture of Experts (MoE) models running on memory-constrained Apple Silicon. This enables running models like **Qwen3.5-122B** (69.6 GB) and **Qwen3.5-397B** (209 GB) on a **64 GB Mac** by streaming expert weights from NVMe SSD.
+
+### Benchmark Results (M1 Ultra 64GB, Qwen3.5-122B-A10B-4bit)
+
+| Configuration | tok/s | vs. Original | Notes |
+|---|---|---|---|
+| Original `--stream-experts` | 0.58 | baseline | Sequential pread, 1 NVMe queue |
+| **This PR (top-k=8, full quality)** | **4.95** | **8.5×** | All 8 experts evaluated |
+| **This PR (top-k=6, default)** | **5.20** | **9.0×** | Recommended default |
+| **This PR (top-k=4, speed mode)** | **5.91** | **10.2×** | Best quality/speed tradeoff |
+| **This PR (top-k=2, turbo mode)** | **6.52** | **11.2×** | Still coherent output |
+
+> Memory stable at **~10.6 GB resident**, no swap activity. Tested over 200-token generation runs.
+
+### The Approach: Small Model Helps Large Model
+
+A novel aspect of this architecture is the **dual-model speculative decoding** pattern: a small draft model (e.g. Qwen3.5-9B at 73 tok/s) runs **entirely in RAM** while the large MoE model (e.g. 122B) streams experts from SSD. The draft model generates candidate tokens at high speed, and the main model verifies them in bulk — dramatically reducing the number of SSD-bound generation rounds needed.
+
+> **Important finding:** Speculative decoding is **counterproductive for SSD-streaming MoE** specifically. The verify pass sends N+1 tokens, each routing to *different* experts — SSD I/O scales with the *union* of all positions' expert selections. Speculative decoding is therefore routed exclusively to **in-RAM models**.
+
+### Optimization Techniques
+
+1. **Cross-Projection Batching**: Collapses ~1,400 per-expert `eval()` calls down to ~48 per token by orchestrating gate/up/down projections together in `SwitchGLU`.
+2. **Concurrent NVMe pread (QD=24)**: Replaces sequential pread with `DispatchQueue.concurrentPerform`, saturating the NVMe controller's queue depth (8 experts × 3 projections = 24 parallel reads).
+3. **AsyncEval Pipeline with Speculative Pread**: Overlaps GPU compute with SSD I/O — uses previous-token routing to speculatively pre-load experts for the next token during the GPU async window (~70% hit rate). Only missed experts (~30%) require on-demand pread after routing sync.
+4. **Persistent Metal Buffers**: Expert weight buffers are allocated once per `SwitchGLU` layer and reused across tokens, eliminating per-token allocation overhead.
+5. **Runtime Top-K Expert Selection**: The `SWIFTLM_TOP_K` environment variable reduces the number of active experts per token at runtime without model recompilation — trading marginal quality for significant speed gains.
+
+### Key Engineering Findings
+
+| Finding | Detail |
+|---|---|
+| **GPU compute is the bottleneck** | At steady state, GPU compute is ~190ms of ~200ms per-token time. The OS page cache serves ~90% of expert reads from RAM. |
+| **Don't cache experts in application memory** | An LRU expert cache *stole* from the OS page cache and regressed performance (4.84 → 4.01 tok/s). Let the kernel manage it. |
+| **MambaCache requires checkpoint rollback** | Unlike attention KV caches (trim = decrement offset), Mamba's recurrent state integrates all history and cannot be partially undone. We implemented `checkpoint()`/`restore()` for speculative decoding on hybrid Attention+Mamba architectures (Qwen3.5). |
+
+### Usage
+
+```bash
+# Standard SSD streaming (recommended, top-k=6):
+SWIFTLM_TOP_K=6 SwiftLM --port 8002 \
+  --model <path>/Qwen3.5-122B-A10B-4bit --stream-experts
+
+# Speed mode (top-k=4):
+SWIFTLM_TOP_K=4 SwiftLM --port 8002 \
+  --model <path>/Qwen3.5-122B-A10B-4bit --stream-experts
+
+# With speculative decoding (in-RAM models only):
+SwiftLM --port 8002 \
+  --model <path>/Qwen3.5-27B-4bit \
+  --draft-model <path>/Qwen3.5-9B-4bit \
+  --num-draft-tokens 4
+```
+
+---
+
+## 🔀 Why We Forked Apple MLX
+
+To achieve the extreme memory efficiency and speeds seen in **SSD Expert Streaming** and **Speculative Decoding**, `SwiftLM` relies on custom C++ primitives that bypass standard unified memory limits.
+
+> [!NOTE]
+> We maintain custom forks (`SharpAI/mlx` and `SharpAI/mlx-c`) to support **out-of-core memory-mapped execution**, streaming tensor blocks directly from the SSD (NVMe) to the GPU via custom Metal kernels (`ssd_streamer.mm` and `fence.air`). Official `ml-explore` repositories do not yet support this out-of-the-box.
+
+For a detailed breakdown on repository architecture, upstream synchronization, our specific custom patches, and the specific indications for when we can safely revert to Apple's native upstream, read the full documentation: 
+👉 **[Upstream MLX Synchronization & SSD Streaming Maintenance](.agents/workflows/mlx-upstream-sync.md)**
+
+---
+
 ## 💻 Benchmarks & Testing
 
 Run our automated benchmark suites via the interactive script:
@@ -159,7 +254,7 @@ The script provides an interactive menu to select any model and run one of two a
 Tests generation speed (TPS) and granular Apple Metal GPU memory allocation across extreme context lengths (e.g., `512, 40000, 100000` tokens).
 - Iterates over 4 configurations: Vanilla, SSD Streaming, TurboQuant, and SSD + TurboQuant.
 - Generates a rich ANSI console visualization with bar charts and a configuration scoreboard.
-- Saves the complete results matrix to `profiling_results_<hostname>.md`.
+- Saves the complete results matrix to `docs/profiling/profiling_results_<hostname>.md`.
 
 ### Test 2: Prompt Cache & Sliding Window Regression Test
 Verifies the stability of the engine's KV prompt cache when interleaving long contexts with sliding window attention bounds.
@@ -215,6 +310,31 @@ curl http://localhost:5413/v1/chat/completions \
 ```
 ---
 
+### Vision-Language Models (VLM)
+To run a vision model (e.g., `mlx-community/Qwen2-VL-2B-Instruct-4bit`), launch SwiftLM with the `--vision` flag:
+```bash
+./.build/release/SwiftLM --model mlx-community/Qwen2-VL-2B-Instruct-4bit --vision
+```
+
+You can then pass standard OpenAI base64 encoded images directly. SwiftLM handles hardware spatial-mapping natively via Metal:
+```bash
+curl http://localhost:5413/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2-vl",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "Describe the contents of this image."},
+          {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ..."}}
+        ]
+      }
+    ]
+  }'
+```
+---
+
 
 ## ⚙️ CLI Options
 
@@ -223,11 +343,18 @@ curl http://localhost:5413/v1/chat/completions \
 | `--model` | (required) | HuggingFace model ID or local path |
 | `--port` | `5413` | Port to listen on |
 | `--host` | `127.0.0.1` | Host to bind |
+| `--vision` | `false` | Enable VLM (vision-language model) mode for image inputs |
+| `--audio` | `false` | Enable ALM (audio-language model) mode for audio inputs |
 | `--max-tokens` | `2048` | Max tokens limit per generation |
 | `--prefill-size`| `512`  | Prompt prefill chunk size (micro-batching for long contexts) |
+| `--top-p` | `1.0` | Default top-p nucleus sampling (overridable per-request) |
+| `--top-k` | `50` | Default top-k sampling (0 disables, overridable per-request) |
+| `--min-p` | `0.0` | Default min-p sampling threshold relative to the highest probability token (0 disables) |
 | `--gpu-layers` | `model_default`| Restrict the amount of layers allocated to GPU hardware |
-| `--stream-experts` | `false` | Enable experimental SSD streaming for MoE model expert matrices |
+| `--stream-experts` | `false` | Enable SSD expert streaming for MoE models (10x speedup) |
 | `--turbo-kv` | `false` | Enable TurboQuant 3-bit KV cache compression |
+| `--draft-model` | (none) | Draft model path/ID for speculative decoding (in-RAM models only) |
+| `--num-draft-tokens` | `4` | Number of draft tokens per speculation round |
 
 ## 📦 Requirements
 
@@ -247,7 +374,15 @@ The model instantly woke up from "whispering" whitespace and successfully respon
 
 ## 🙏 Acknowledgments & Credits
 
-`SwiftLM` leverages the powerful foundation of the Apple MLX community and relies heavily on the open-source ecosystem. While the custom C++ implementations, Metal optimizations, and high-performance pipeline architecture were engineered natively for this engine, we owe massive thanks to the following projects for their indispensable reference materials and underlying protocols:
+[![Awesome MLX](https://img.shields.io/badge/Awesome-MLX-blue?style=flat-square)](https://github.com/raullenchai/awesome-mlx)
+
+`SwiftLM` leverages the powerful foundation of the Apple MLX community and relies heavily on the open-source ecosystem. While the custom C++ implementations, Metal optimizations, and high-performance pipeline architecture were engineered natively for this engine, we owe massive thanks to the following projects and contributors for their indispensable reference materials and underlying protocols:
+
+### Contributors
+
+- **[Eric Lake](https://github.com/ericjlake)** — Engineered the **SSD Expert Streaming 10x rewrite** ([PR #26](https://github.com/SharpAI/SwiftLM/pull/26)), achieving 10× generation speedup on 122B+ MoE models via cross-projection batching, concurrent NVMe pread (QD=24), asyncEval pipeline with speculative pread, and runtime top-k expert selection. Also implemented the **speculative decoding infrastructure** with `DraftModelRef`, dual-model loading, and **MambaCache checkpoint/restore** for hybrid Attention+Mamba architectures.
+
+### Projects & References
 
 - **[mlx-swift](https://github.com/ml-explore/mlx-swift)** — The core Apple MLX wrapper bringing Metal-accelerated operations into the Swift ecosystem.
 - **[mlx-lm](https://github.com/ml-explore/mlx/tree/main/mlx_lm)** — The official Python language models implementation, serving as the core inspiration for our chunked-prefill architecture and attention manipulation logic.

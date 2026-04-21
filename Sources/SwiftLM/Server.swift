@@ -19,8 +19,13 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 import MLXVLM
+import MLXInferenceCore
 import Tokenizers
 import TurboQuantKit
+
+extension LMInput: @retroactive @unchecked Sendable {}
+extension MLXLMCommon.LMInput.Text: @retroactive @unchecked Sendable {}
+extension MLXLMCommon.LMInput.ProcessedImage: @retroactive @unchecked Sendable {}
 
 // ── Hub/Tokenizer bridges (Downloader + TokenizerLoader conformances) ─────────
 
@@ -232,6 +237,12 @@ struct MLXServer: AsyncParsableCommand {
     @Option(name: .long, help: "Default top-p nucleus sampling (overridable per-request)")
     var topP: Float = 1.0
 
+    @Option(name: .long, help: "Default top-k sampling (overridable per-request)")
+    var topK: Int?
+
+    @Option(name: .long, help: "Default min-p sampling (overridable per-request)")
+    var minP: Float?
+
     @Option(name: .long, help: "Repetition penalty factor (overridable per-request)")
     var repeatPenalty: Float?
 
@@ -243,6 +254,9 @@ struct MLXServer: AsyncParsableCommand {
 
     @Flag(name: .long, help: "Enable VLM (vision-language model) mode for image inputs")
     var vision: Bool = false
+
+    @Flag(name: .long, help: "Enable ALM (audio-language model) mode for audio inputs")
+    var audio: Bool = false
 
     @Option(name: .long, help: "GPU memory limit in MB (default: system limit)")
     var memLimit: Int?
@@ -285,6 +299,12 @@ struct MLXServer: AsyncParsableCommand {
 
     @Option(name: .long, help: "Chunk size for prefill evaluation (default: 512, lower to prevent GPU timeout on large models)")
     var prefillSize: Int = 512
+
+    @Option(name: .long, help: "Draft model for speculative decoding (local path or HuggingFace ID). Must share tokenizer with main model.")
+    var draftModel: String?
+
+    @Option(name: .long, help: "Number of draft tokens per speculation round (default: 4)")
+    var numDraftTokens: Int = 4
 
     // ── Bonjour-based distributed cluster (v1) ──
     // Superset of the legacy hostfile-based --tq-distributed path; this
@@ -576,6 +596,15 @@ struct MLXServer: AsyncParsableCommand {
             }
         }
 
+        let cacheRoot = URL.applicationSupportDirectory
+            .appendingPathComponent("MLX", isDirectory: true)
+            .appendingPathComponent("HuggingFace", isDirectory: true)
+        let hub = HubApi(downloadBase: cacheRoot)
+        let downloader = HubDownloader(hub: hub)
+        let architecture = try await ModelArchitectureProbe.inspect(
+            configuration: modelConfig,
+            downloader: downloader
+        )
         let isVision = self.vision
         let container: ModelContainer
         
@@ -586,12 +615,18 @@ struct MLXServer: AsyncParsableCommand {
         }()
         let tracker = ProgressTracker(modelId: resolvedModelId)
         
-        let cacheRoot = URL.applicationSupportDirectory
-            .appendingPathComponent("MLX", isDirectory: true)
-            .appendingPathComponent("HuggingFace", isDirectory: true)
-        if isVision {
+        let isAudio = self.audio
+        if isVision && isAudio {
+            print("[SwiftLM] Loading Omni-Language Model (Text + Vision + Audio)...")
+            container = try await OmniModelFactory.shared.loadContainer(
+                from: downloader,
+                using: TransformersTokenizerLoader(),
+                configuration: modelConfig
+            ) { progress in
+                tracker.printProgress(progress)
+            }
+        } else if isVision {
             print("[SwiftLM] Loading VLM (vision-language model)...")
-            let downloader = HubDownloader(hub: HubApi(downloadBase: cacheRoot))
             container = try await VLMModelFactory.shared.loadContainer(
                 from: downloader,
                 using: TransformersTokenizerLoader(),
@@ -599,8 +634,19 @@ struct MLXServer: AsyncParsableCommand {
             ) { progress in
                 tracker.printProgress(progress)
             }
+        } else if isAudio {
+            print("[SwiftLM] Loading ALM (audio-language model)...")
+            // Use OmniModelFactory (VLM-backed) so Gemma4's audio tower is loaded
+            // and the native prepareForMultimodal path extracts real mel features.
+            container = try await OmniModelFactory.shared.loadContainer(
+                from: downloader,
+                using: TransformersTokenizerLoader(),
+                configuration: modelConfig
+            ) { progress in
+                tracker.printProgress(progress)
+            }
         } else {
-            let downloader = HubDownloader(hub: HubApi(downloadBase: cacheRoot))
+            print("[SwiftLM] Loading LLM (large language model)...")
             container = try await LLMModelFactory.shared.loadContainer(
                 from: downloader,
                 using: TransformersTokenizerLoader(),
@@ -611,6 +657,39 @@ struct MLXServer: AsyncParsableCommand {
         }
 
         print("[SwiftLM] Loaded model configuration. Inferred tool call format: \(String(describing: await container.configuration.toolCallFormat))")
+
+        // ── Load draft model for speculative decoding ──
+        let draftModelRef: DraftModelRef?
+        let numDraftTokensConfig = self.numDraftTokens
+        if let draftModelPath = self.draftModel {
+            print("[SwiftLM] Loading draft model for speculative decoding: \(draftModelPath)")
+            var draftConfig: ModelConfiguration
+            let draftFM = FileManager.default
+            if draftFM.fileExists(atPath: draftModelPath) {
+                var isDir: ObjCBool = false
+                draftFM.fileExists(atPath: draftModelPath, isDirectory: &isDir)
+                if isDir.boolValue {
+                    draftConfig = ModelConfiguration(directory: URL(filePath: draftModelPath))
+                } else {
+                    draftConfig = ModelConfiguration(id: draftModelPath)
+                }
+            } else {
+                draftConfig = ModelConfiguration(id: draftModelPath)
+            }
+            let draftDownloader = HubDownloader(hub: HubApi(downloadBase: cacheRoot))
+            let draftContainer = try await LLMModelFactory.shared.loadContainer(
+                from: draftDownloader,
+                using: TransformersTokenizerLoader(),
+                configuration: draftConfig
+            ) { progress in
+                // Silent loading for draft model
+            }
+            draftModelRef = await draftContainer.extractDraftModel()
+            print("[SwiftLM] Draft model loaded successfully (\(numDraftTokensConfig) tokens/round)")
+        } else {
+            draftModelRef = nil
+        }
+
 
         // ── Apply GPU/CPU layer partitioning ──
         if let gpuCount = requestedGPULayers {
@@ -670,6 +749,8 @@ struct MLXServer: AsyncParsableCommand {
             ctxSize: self.ctxSize,
             temp: self.temp,
             topP: self.topP,
+            topK: self.topK,
+            minP: self.minP,
             repeatPenalty: self.repeatPenalty,
             thinking: self.thinking,
             isVision: isVision,
@@ -696,6 +777,8 @@ struct MLXServer: AsyncParsableCommand {
         let stats = ServerStats()
 
         let ctxSizeStr = config.ctxSize.map { String($0) } ?? "model_default"
+        let topKStr = config.topK.map { String($0) } ?? "disabled"
+        let minPStr = config.minP.map { String($0) } ?? "disabled"
         let penaltyStr = config.repeatPenalty.map { String($0) } ?? "disabled"
         let corsStr = corsOrigin ?? "disabled"
         let memLimitStr = self.memLimit.map { "\($0)MB" } ?? "system_default"
@@ -703,7 +786,7 @@ struct MLXServer: AsyncParsableCommand {
         let thinkingStr = config.thinking ? "enabled" : "disabled"
         let ssdStr = self.streamExperts ? "enabled" : "disabled"
         let turboKVStr = config.turboKV ? "enabled" : "disabled"
-        print("[SwiftLM] Config: ctx_size=\(ctxSizeStr), temp=\(config.temp), top_p=\(config.topP), repeat_penalty=\(penaltyStr), parallel=\(parallelSlots), cors=\(corsStr), mem_limit=\(memLimitStr), auth=\(authStr), thinking=\(thinkingStr), ssd_stream=\(ssdStr), turbo_kv=\(turboKVStr)")
+        print("[SwiftLM] Config: ctx_size=\(ctxSizeStr), temp=\(config.temp), top_p=\(config.topP), top_k=\(topKStr), min_p=\(minPStr), repeat_penalty=\(penaltyStr), parallel=\(parallelSlots), cors=\(corsStr), mem_limit=\(memLimitStr), auth=\(authStr), thinking=\(thinkingStr), ssd_stream=\(ssdStr), turbo_kv=\(turboKVStr)")
 
         // ── Build Hummingbird router ──
         let router = Router()
@@ -778,7 +861,8 @@ struct MLXServer: AsyncParsableCommand {
             do {
                 let bodyData = try await collectBody(request)
                 return try await handleChatCompletion(
-                    bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats, promptCache: promptCache
+                    bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats, promptCache: promptCache,
+                    draftModelRef: draftModelRef, numDraftTokens: numDraftTokensConfig
                 )
             } catch {
                 let errMsg = String(describing: error).replacingOccurrences(of: "\"", with: "'")
@@ -984,6 +1068,8 @@ struct ServerConfig: Sendable {
     let ctxSize: Int?
     let temp: Float
     let topP: Float
+    let topK: Int?
+    let minP: Float?
     let repeatPenalty: Float?
     let thinking: Bool
     let isVision: Bool
@@ -1171,7 +1257,7 @@ actor PromptCache {
 // ── Request Body Extraction ──────────────────────────────────────────────────
 
 func collectBody(_ request: Request) async throws -> Data {
-    var bodyBuffer = try await request.body.collect(upTo: 10 * 1024 * 1024)
+    var bodyBuffer = try await request.body.collect(upTo: 100 * 1024 * 1024)
     let bodyBytes = bodyBuffer.readBytes(length: bodyBuffer.readableBytes) ?? []
     return Data(bodyBytes)
 }
@@ -1184,7 +1270,9 @@ func handleChatCompletion(
     container: ModelContainer,
     semaphore: AsyncSemaphore,
     stats: ServerStats,
-    promptCache: PromptCache
+    promptCache: PromptCache,
+    draftModelRef: DraftModelRef? = nil,
+    numDraftTokens: Int = 4
 ) async throws -> Response {
     let chatReq = try JSONDecoder().decode(ChatCompletionRequest.self, from: bodyData)
     let isStream = chatReq.stream ?? false
@@ -1194,12 +1282,14 @@ func handleChatCompletion(
     let tokenLimit = chatReq.maxTokens ?? config.maxTokens
     let temperature = chatReq.temperature.map(Float.init) ?? config.temp
     let topP = chatReq.topP.map(Float.init) ?? config.topP
+    let topK = chatReq.topK ?? config.topK ?? 50
+    let minP = chatReq.minP.map(Float.init) ?? config.minP ?? 0.0
     let repeatPenalty = chatReq.repetitionPenalty.map(Float.init) ?? config.repeatPenalty
-    let stopSequences = chatReq.stop ?? []
+    let stopSequences = (chatReq.stop ?? []) + ["<end_of_turn>", "<|im_end|>", "<|eot_id|>", "<turn|>", "<|tool_response|>"]
     let includeUsage = chatReq.streamOptions?.includeUsage ?? false
 
     // Log extra sampling params if provided (accepted for API compat, not all are used)
-    if chatReq.topK != nil || chatReq.frequencyPenalty != nil || chatReq.presencePenalty != nil {
+    if chatReq.frequencyPenalty != nil || chatReq.presencePenalty != nil {
         // These are accepted but may not affect generation if MLX doesn't support them
     }
 
@@ -1208,6 +1298,8 @@ func handleChatCompletion(
         maxKVSize: config.ctxSize,
         temperature: temperature,
         topP: topP,
+        topK: topK,
+        minP: minP,
         repetitionPenalty: repeatPenalty,
         prefillStepSize: config.prefillSize
     )
@@ -1223,9 +1315,10 @@ func handleChatCompletion(
     for msg in chatReq.messages {
         let textContent = msg.textContent
         let images = msg.extractImages()
+        let audio = msg.extractAudio()
         switch msg.role {
         case "system", "developer":
-            chatMessages.append(.system(textContent, images: images))
+            chatMessages.append(.system(textContent, images: images, audio: audio))
             systemPromptText += textContent
         case "assistant":
             var formattedToolCalls: [[String: any Sendable]]? = nil
@@ -1241,11 +1334,11 @@ func handleChatCompletion(
                     ] as [String: any Sendable]
                 }
             }
-            chatMessages.append(.assistant(textContent, images: images, toolCalls: formattedToolCalls))
+            chatMessages.append(.assistant(textContent, images: images, audio: audio, toolCalls: formattedToolCalls))
         case "tool":
             chatMessages.append(.tool(textContent, toolCallId: msg.tool_call_id))
         default:
-            chatMessages.append(.user(textContent, images: images))
+            chatMessages.append(.user(textContent, images: images, audio: audio))
         }
     }
 
@@ -1289,6 +1382,7 @@ func handleChatCompletion(
     }
     let templateContext: [String: any Sendable]? = enableThinking ? nil : ["enable_thinking": false]
     let userInput = UserInput(chat: chatMessages, tools: toolSpecs, additionalContext: templateContext)
+    print("[Server Debug] Created UserInput with \(userInput.images.count) images and \(userInput.audio.count) audio inputs.")
     let lmInput = try await container.prepare(input: userInput)
 
     // ── Prompt caching: full token sequence for prefix matching ──
@@ -1315,9 +1409,16 @@ func handleChatCompletion(
             }
         }
 
+        // ── Prompt cache: bypass for multimodal inputs ──
+        // The prompt cache only stores KV state for text token sequences. For multimodal
+        // requests (image/audio), prepare() must inject the vision/audio feature embeddings
+        // before the language model runs. A cache hit would skip that injection, feeding
+        // raw <|image|>/<|audio|> token embeddings instead of the projected features.
+        let isMultimodalRequest = lmInput.image != nil || lmInput.audio != nil
+
         // Try to restore via token-by-token prefix match (llama-server style)
         var stream: AsyncStream<Generation>
-        if let cachedCount = await promptCache.restore(newTokens: promptTokens, into: cache) {
+        if !isMultimodalRequest, let cachedCount = await promptCache.restore(newTokens: promptTokens, into: cache) {
             // Cache hit: KV state is pre-populated up to cachedCount tokens.
             // Only compute the remaining (new) tokens.
             var startIndex = cachedCount
@@ -1332,6 +1433,13 @@ func handleChatCompletion(
             let trimmedInput = LMInput(tokens: remainingTokens)
             stream = try MLXLMCommon.generate(
                 input: trimmedInput, cache: cache, parameters: params, context: context
+            )
+        } else if let draftRef = draftModelRef {
+            // Speculative decoding path: draft model generates candidates, main model verifies
+            print("[SwiftLM] Using speculative decoding (\(numDraftTokens) draft tokens/round)")
+            stream = try MLXLMCommon.generate(
+                input: lmInput, cache: cache, parameters: params, context: context,
+                draftModel: draftRef.model, numDraftTokens: numDraftTokens
             )
         } else {
             // Cache miss: process the full prompt.
@@ -1837,6 +1945,8 @@ func handleTextCompletion(
     let tokenLimit = compReq.maxTokens ?? config.maxTokens
     let temperature = compReq.temperature.map(Float.init) ?? config.temp
     let topP = compReq.topP.map(Float.init) ?? config.topP
+    let topK = compReq.topK ?? config.topK ?? 50
+    let minP = compReq.minP.map(Float.init) ?? config.minP ?? 0.0
     let repeatPenalty = compReq.repetitionPenalty.map(Float.init) ?? config.repeatPenalty
     let stopSequences = compReq.stop ?? []
 
@@ -1845,6 +1955,8 @@ func handleTextCompletion(
         maxKVSize: config.ctxSize,
         temperature: temperature,
         topP: topP,
+        topK: topK,
+        minP: minP,
         repetitionPenalty: repeatPenalty,
         prefillStepSize: config.prefillSize
     )
@@ -2316,6 +2428,29 @@ struct ChatCompletionRequest: Decodable {
                 return nil
             }
         }
+
+        /// Extract audio from multipart content
+        func extractAudio() -> [UserInput.Audio] {
+            guard let content = content, case .parts(let parts) = content else { return [] }
+            return parts.compactMap { part -> UserInput.Audio? in
+                guard part.type == "input_audio", let audio = part.inputAudio else { return nil }
+                
+                // Be tolerant of optional data URI prefixes like "data:audio/wav;base64,"
+                var base64Str = audio.data
+                if base64Str.hasPrefix("data:") {
+                    if let commaIdx = base64Str.firstIndex(of: ",") {
+                        base64Str = String(base64Str[base64Str.index(after: commaIdx)...])
+                    }
+                }
+                
+                if let data = Data(base64Encoded: base64Str, options: .ignoreUnknownCharacters) {
+                    return .data(data, format: audio.format)
+                } else {
+                    print("[Server] Fatal Base64 parse error for audio data!")
+                }
+                return nil
+            }
+        }
     }
 
     /// Message content: either a plain string or structured multipart content
@@ -2339,16 +2474,23 @@ struct ChatCompletionRequest: Decodable {
         let type: String
         let text: String?
         let imageUrl: ImageUrlContent?
+        let inputAudio: InputAudioContent?
 
         enum CodingKeys: String, CodingKey {
             case type, text
             case imageUrl = "image_url"
+            case inputAudio = "input_audio"
         }
     }
 
     struct ImageUrlContent: Decodable {
         let url: String
         let detail: String?
+    }
+
+    struct InputAudioContent: Decodable {
+        let data: String
+        let format: String
     }
 
     struct ToolDef: Decodable {
@@ -2367,6 +2509,7 @@ struct ChatCompletionRequest: Decodable {
     let temperature: Double?
     let topP: Double?
     let topK: Int?
+    let minP: Double?
     let repetitionPenalty: Double?
     let frequencyPenalty: Double?
     let presencePenalty: Double?
@@ -2385,6 +2528,7 @@ struct ChatCompletionRequest: Decodable {
         case maxTokens = "max_tokens"
         case topP = "top_p"
         case topK = "top_k"
+        case minP = "min_p"
         case repetitionPenalty = "repetition_penalty"
         case frequencyPenalty = "frequency_penalty"
         case presencePenalty = "presence_penalty"
@@ -2402,6 +2546,8 @@ struct TextCompletionRequest: Decodable {
     let maxTokens: Int?
     let temperature: Double?
     let topP: Double?
+    let topK: Int?
+    let minP: Double?
     let repetitionPenalty: Double?
     let stop: [String]?
     let seed: Int?
@@ -2410,6 +2556,8 @@ struct TextCompletionRequest: Decodable {
         case model, prompt, stream, temperature, stop, seed
         case maxTokens = "max_tokens"
         case topP = "top_p"
+        case topK = "top_k"
+        case minP = "min_p"
         case repetitionPenalty = "repetition_penalty"
     }
 }
@@ -2527,5 +2675,166 @@ struct TokenUsage: Encodable {
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
         case totalTokens = "total_tokens"
+    }
+}
+
+// ── ALM Factory & Tokenizer Bridging ──────────────────────────────────────────
+
+public struct ALMUserInputProcessor: UserInputProcessor, @unchecked Sendable {
+    let tokenizer: MLXLMCommon.Tokenizer
+    let configuration: ModelConfiguration
+    let messageGenerator: MessageGenerator
+    let fusionProcessor: MultimodalFusionProcessor
+    let numAudioEmbeddings: Int
+
+    public init(
+        tokenizer: any MLXLMCommon.Tokenizer, configuration: ModelConfiguration,
+        messageGenerator: MessageGenerator,
+        boaToken: Int = 255010, eoaToken: Int = 255011,
+        numAudioEmbeddings: Int = 128
+    ) {
+        self.tokenizer = tokenizer
+        self.configuration = configuration
+        self.messageGenerator = messageGenerator
+        self.fusionProcessor = MultimodalFusionProcessor(boaToken: boaToken, eoaToken: eoaToken)
+        self.numAudioEmbeddings = numAudioEmbeddings
+    }
+
+    public func prepare(input: UserInput) throws -> LMInput {
+        let messages = messageGenerator.generate(from: input)
+        do {
+            print("Messages:", messages); let promptTokensInt = try tokenizer.applyChatTemplate(
+                messages: messages, tools: input.tools, additionalContext: input.additionalContext)
+            
+            // Check if there is audio to interleave
+            if !input.audio.isEmpty {
+                print("[ALM] Interleaving Audio Tokens into prompt.")
+                // Mock num audio embeddings for now - typically derived from the model or audio lengths
+                let rawSequence = fusionProcessor.interleave(
+                    textTokens: promptTokensInt,
+                    numAudioEmbeddings: numAudioEmbeddings,
+                    audioFirst: true
+                )
+                return LMInput(tokens: MLXArray(rawSequence))
+            }
+            
+            return LMInput(tokens: MLXArray(promptTokensInt))
+        } catch MLXLMCommon.TokenizerError.missingChatTemplate {
+            let prompt = messages.compactMap { $0["content"] as? String }.joined(separator: "\n\n")
+            let promptTokens = tokenizer.encode(text: prompt)
+            return LMInput(tokens: MLXArray(promptTokens))
+        }
+    }
+}
+
+public final class ALMModelFactory: ModelFactory, @unchecked Sendable {
+    public static let shared = ALMModelFactory()
+    public let typeRegistry: ModelTypeRegistry = LLMTypeRegistry.shared
+    public let modelRegistry: AbstractModelRegistry = LLMRegistry.shared
+    
+    public init() {}
+
+    public func _load(
+        configuration: ResolvedModelConfiguration,
+        tokenizerLoader: any TokenizerLoader
+    ) async throws -> ModelContext {
+        let context = try await LLMModelFactory.shared._load(configuration: configuration, tokenizerLoader: tokenizerLoader)
+        
+        let numAudioEmbeddings = OmniModelFactory.extractNumAudioEmbeddings(configuration: configuration)
+        let messageGenerator = DefaultMessageGenerator()
+        let processor = ALMUserInputProcessor(
+            tokenizer: context.tokenizer,
+            configuration: context.configuration,
+            messageGenerator: messageGenerator,
+            boaToken: 255010,
+            eoaToken: 255011,
+            numAudioEmbeddings: numAudioEmbeddings
+        )
+        
+        return .init(
+            configuration: context.configuration,
+            model: context.model,
+            processor: processor,
+            tokenizer: context.tokenizer
+        )
+    }
+}
+
+public struct OmniUserInputProcessor: UserInputProcessor, @unchecked Sendable {
+    let vlmProcessor: any UserInputProcessor
+    let fusionProcessor: MultimodalFusionProcessor
+    let numAudioEmbeddings: Int
+    
+    public init(vlmProcessor: any UserInputProcessor, boaToken: Int = 255010, eoaToken: Int = 255011, numAudioEmbeddings: Int = 128) {
+        self.vlmProcessor = vlmProcessor
+        self.fusionProcessor = MultimodalFusionProcessor(boaToken: boaToken, eoaToken: eoaToken)
+        self.numAudioEmbeddings = numAudioEmbeddings
+    }
+
+    public func prepare(input: UserInput) async throws -> LMInput {
+        // Run standard VLM image substitution & image array processing
+        let vlmInput = try await vlmProcessor.prepare(input: input)
+        
+        let tokens = vlmInput.text.tokens.asArray(Int.self)
+        
+        // If the VLM processor already natively extracted and processed the audio, do NOT mangle its layout with dummy interleaving!
+        if vlmInput.audio != nil {
+            return vlmInput
+        }
+        
+        if !input.audio.isEmpty && !tokens.isEmpty {
+            print("[Omni] Interleaving Audio Tokens into VLM prompt structure.")
+            let rawSequence = fusionProcessor.interleave(
+                textTokens: tokens,
+                numAudioEmbeddings: numAudioEmbeddings,
+                audioFirst: false // Append audio after vision context typically
+            )
+            return LMInput(text: .init(tokens: MLXArray(rawSequence)), image: vlmInput.image, audio: vlmInput.audio)
+        }
+        
+        return vlmInput
+    }
+}
+
+public final class OmniModelFactory: ModelFactory, @unchecked Sendable {
+    public static let shared = OmniModelFactory()
+    public let typeRegistry: ModelTypeRegistry = VLMTypeRegistry.shared
+    public let modelRegistry: AbstractModelRegistry = VLMRegistry.shared
+    
+    public init() {}
+
+    public func _load(
+        configuration: ResolvedModelConfiguration,
+        tokenizerLoader: any TokenizerLoader
+    ) async throws -> ModelContext {
+        let vlmContext = try await VLMModelFactory.shared._load(configuration: configuration, tokenizerLoader: tokenizerLoader)
+        let numAudioEmbeddings = OmniModelFactory.extractNumAudioEmbeddings(configuration: configuration)
+        let omniProcessor = OmniUserInputProcessor(
+            vlmProcessor: vlmContext.processor,
+            numAudioEmbeddings: numAudioEmbeddings
+        )
+        
+        return .init(
+            configuration: vlmContext.configuration,
+            model: vlmContext.model,
+            processor: omniProcessor,
+            tokenizer: vlmContext.tokenizer
+        )
+    }
+
+    public static func extractNumAudioEmbeddings(configuration: ResolvedModelConfiguration) -> Int {
+        let configurationURL = configuration.modelDirectory.appending(component: "config.json")
+        if let data = try? Data(contentsOf: configurationURL),
+           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            
+            if let subsampling = dict["subsampling_conv_channels"] as? [Int] {
+                return subsampling.first ?? 128
+            }
+            if let audioConfig = dict["audio_config"] as? [String: Any],
+               let embeddings = audioConfig["num_audio_embeddings"] as? Int {
+                return embeddings
+            }
+        }
+        return 128
     }
 }

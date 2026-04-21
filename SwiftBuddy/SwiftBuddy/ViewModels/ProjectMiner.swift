@@ -38,7 +38,7 @@ public final class ProjectMiner: ObservableObject {
             return
         }
         
-        for case let fileURL as URL in enumerator {
+        while let fileURL = enumerator.nextObject() as? URL {
             let resourceValues = try? fileURL.resourceValues(forKeys: [.isDirectoryKey])
             let isDirectory = resourceValues?.isDirectory ?? false
             

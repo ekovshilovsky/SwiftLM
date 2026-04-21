@@ -19,9 +19,9 @@ let package = Package(
         // TurboQuant C API headers and module map (sibling repo, built via CMake)
         .package(path: "../turboquant-mlx-core"),
         // Local Apple MLX Swift fork for C++ extensions
-        .package(url: "https://github.com/SharpAI/mlx-swift.git", branch: "main"),
+        .package(path: "./mlx-swift"),
         // Apple's LLM library built on MLX Swift (SharpAI fork — with GPU/CPU layer partitioning)
-        .package(url: "https://github.com/SharpAI/mlx-swift-lm.git", branch: "main"),
+        .package(path: "./mlx-swift-lm"),
         // HuggingFace tokenizers + model download
         .package(url: "https://github.com/huggingface/swift-transformers", .upToNextMinor(from: "1.2.0")),
         // Lightweight HTTP server (Apple-backed Swift server project)
@@ -77,6 +77,7 @@ let package = Package(
             name: "SwiftLM",
             dependencies: [
                 "TurboQuantKit",
+                "MLXInferenceCore",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
@@ -96,6 +97,20 @@ let package = Package(
                 ]),
             ]
         ),
+        // ── STFT Audio Profiling Testing Script (macOS only) ───────────
+        .executableTarget(
+            name: "SwiftLMTestSTFT",
+            dependencies: [
+                "MLXInferenceCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
+            path: "Sources/SwiftLMTestSTFT",
+            exclude: ["ground_truth.py"]
+        ),
+
         // ── macOS GUI App (SwiftBuddy) ──────────────────────────────
         .executableTarget(
             name: "SwiftBuddy",
@@ -104,7 +119,12 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "SwiftSoup", package: "SwiftSoup"),
             ],
-            path: "SwiftBuddy/SwiftBuddy"
+            path: "SwiftBuddy/SwiftBuddy",
+            exclude: [
+                "Assets.xcassets",
+                "SwiftBuddy.entitlements",
+                "Personas/Lumina.json"
+            ]
         ),
         // ── Shared inference library for SwiftLM Chat (iOS + macOS) ──
         .target(
@@ -112,6 +132,7 @@ let package = Package(
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
                 .product(name: "Hub", package: "swift-transformers"),
