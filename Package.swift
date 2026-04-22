@@ -188,6 +188,7 @@ let package = Package(
                 "TurboQuant/Distributed/ShardAwareSafetensorsReaderTests.swift",
                 "TurboQuant/Distributed/ShardMetadataTests.swift",
                 "TurboQuant/Distributed/ShardOffsetCalculatorTests.swift",
+                "TurboQuant/Distributed/TurboQuantAllToShardedLinearTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
                 "TurboQuant/Integration/UpstreamRegressionTests.swift",
             ],
