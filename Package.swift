@@ -68,6 +68,8 @@ let package = Package(
             name: "TurboQuantKit",
             dependencies: [
                 .product(name: "TurboQuantC", package: "turboquant-mlx-core"),
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
                 "CArgon2",
             ],
             path: "Sources/SwiftLM/TurboQuant"
