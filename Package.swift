@@ -183,6 +183,7 @@ let package = Package(
                 "TurboQuant/TestPipe.swift",
                 "TurboQuant/DistributedCLIOptionsTests.swift",
                 "TurboQuant/TopologyReporterTests.swift",
+                "TurboQuant/Distributed/ShardAwareSafetensorsReaderTests.swift",
                 "TurboQuant/Distributed/ShardMetadataTests.swift",
                 "TurboQuant/Distributed/ShardOffsetCalculatorTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
