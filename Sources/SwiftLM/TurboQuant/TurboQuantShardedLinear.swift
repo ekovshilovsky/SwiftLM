@@ -120,26 +120,53 @@ public final class TurboQuantShardedLinear {
         self.residualCodebookRef = residualCodebook
 
         #if canImport(TurboQuantC)
-        // `mlx_array.ctx` is a `void*` holding a live
-        // `mlx::core::array*` (see mlx-c/mlx/c/private/array.h). The
-        // TurboQuant C API expects the same pointer type at its
-        // `const void*` parameters, so we can forward each MLXArray's
-        // inner `ctx` directly — no additional bridging allocator.
-        let created = tq_linear_create_shard(
-            Int32(fullInFeatures),
-            Int32(localInFeatures),
-            Int32(rankOutFeatures),
-            Int32(primaryBits),
-            Int32(residualBits),
-            UnsafeRawPointer(packedPrimary.ctx.ctx),
-            UnsafeRawPointer(packedResidual.ctx.ctx),
-            UnsafeRawPointer(norms.ctx.ctx),
-            UnsafeRawPointer(primaryCodebook.ctx.ctx),
-            UnsafeRawPointer(residualCodebook.ctx.ctx),
-            seedPrimary,
-            seedResidual,
-            Int32(blockSize)
-        )
+        // `tq_linear_create_shard` takes raw data pointers
+        // (`const uint8_t*` for packed indices, `const float*` for
+        // norms and codebooks) and copies them into MLX-owned
+        // storage on construction — the caller's buffers can be
+        // released as soon as the factory returns. MLXArray's
+        // backing buffer is not directly addressable as host-side
+        // bytes, so we materialize a contiguous fp32/u8 copy of each
+        // tensor via `asData(access: .copy)` and hand the resulting
+        // `Data` buffers to the C API within `withUnsafeBytes`
+        // closures. This avoids the prior bug where the Swift side
+        // passed the inner `mlx::core::array*` pointer and the C
+        // impl dereferenced its metadata header as raw index bytes.
+        //
+        // `asData(access: .copy)` materializes the backing (triggers
+        // graph evaluation) before copying so the returned bytes are
+        // valid even when the MLXArray is a lazy slice of a parent.
+        let primaryBytes = packedPrimary.asType(.uint8).asData(access: .copy).data
+        let residualBytes = packedResidual.asType(.uint8).asData(access: .copy).data
+        let normsBytes = norms.asType(.float32).asData(access: .copy).data
+        let primaryCbBytes = primaryCodebook.asType(.float32).asData(access: .copy).data
+        let residualCbBytes = residualCodebook.asType(.float32).asData(access: .copy).data
+
+        let created: tq_linear_t? = primaryBytes.withUnsafeBytes { primaryPtr in
+            residualBytes.withUnsafeBytes { residualPtr in
+                normsBytes.withUnsafeBytes { normsPtr in
+                    primaryCbBytes.withUnsafeBytes { primaryCbPtr in
+                        residualCbBytes.withUnsafeBytes { residualCbPtr in
+                            tq_linear_create_shard(
+                                Int32(fullInFeatures),
+                                Int32(localInFeatures),
+                                Int32(rankOutFeatures),
+                                Int32(primaryBits),
+                                Int32(residualBits),
+                                primaryPtr.baseAddress,
+                                residualPtr.baseAddress,
+                                normsPtr.baseAddress,
+                                primaryCbPtr.baseAddress,
+                                residualCbPtr.baseAddress,
+                                seedPrimary,
+                                seedResidual,
+                                Int32(blockSize)
+                            )
+                        }
+                    }
+                }
+            }
+        }
         guard let h = created else {
             throw Error.createFailed
         }
@@ -164,6 +191,13 @@ public final class TurboQuantShardedLinear {
     /// owned by Swift — its deinit releases the underlying C++ array.
     public func callAsFunction(_ input: MLXArray) -> MLXArray {
         #if canImport(TurboQuantC)
+        // Force the input graph to materialize before handing its
+        // backing `mlx::core::array*` to the C kernel. The C++ layer
+        // accesses the array's data directly via `data<T>()`, which
+        // requires the graph to be evaluated; an unevaluated input
+        // hands the kernel an empty buffer and silently produces
+        // zeros (Task 9a.6 finding).
+        input.eval()
         let outputPtr = tq_linear_forward(
             handle,
             UnsafeRawPointer(input.ctx.ctx)
