@@ -1,20 +1,39 @@
-// TurboQuant row-parallel linear layer. Holds a rank-local slice of
-// the input dimension of a TQ linear layer's weight. Input to
-// callAsFunction must already be sharded along the input dim (produced
-// by an upstream column-parallel layer). Per-rank matmul produces a
-// partial output of the full output shape; group.allSum accumulates
-// partials across ranks to yield the replicated full output.
+// TurboQuant row-parallel linear layer. Holds the rank-local slice
+// of a TurboQuant linear layer's compressed payload — packed primary
+// indices and packed residual indices sliced along the input-dim
+// axis, plus the per-row norms and Lloyd-Max codebooks (broadcast
+// unchanged across ranks). `callAsFunction` forwards a rank-local
+// input slice through the shard-aware TurboQuant kernel to produce a
+// partial output of the full output shape, then `group.allSum`
+// accumulates partials across ranks to yield the replicated full
+// output.
 //
-// At a size-1 group the allSum is a no-op and the partial IS the full
-// answer. In-process testing exploits this: compute two partials on a
-// size-1 group with the two rank-slice weights, manually sum the
-// partials, and compare to a single-rank full matmul. This mirrors
-// what a size-2 group's allSum would produce.
+// Task 9a.5 wires this layer to the real TQ kernel via the
+// `TurboQuantShardedLinear` Swift bridge (Task 9a.3), replacing the
+// Task 8 MLX.matmul stub that operated on a pre-dequantized fp16
+// weight. Row-parallel semantics: the input dim is sliced across
+// ranks (`localInFeatures == fullInFeatures / worldSize`) while the
+// output dim is produced in full on every rank and summed by the
+// collective. The C kernel still needs `fullInFeatures` explicitly to
+// derive the correct combined_scale (per Task 9a.1's finding: WHT
+// factorization requires this so per-shard rescale does not drift).
 //
-// Phase 3 Task 8 uses a stub MLX.matmul forward path; Phase 3 Task 9
-// swaps in TurboQuant's kernel so the layer operates on the compressed
-// TQ representation (codebook + indices + rotation) rather than an
-// fp16 dequantized weight.
+// Row-parallel sharding is only valid when the full input dim aligns
+// on a group-sized block boundary — `fullInFeatures % (worldSize *
+// blockSize) == 0`. Task 9a.1 proved this is the only configuration
+// where rotation and per-block norm semantics compose cleanly across
+// shards; misaligned splits produce silently wrong combined_scale
+// values. The precondition in `init` enforces this invariant at
+// construction time.
+//
+// At a size-1 group the `allSum` is a no-op and the single-rank
+// partial IS the full answer.
+//
+// Payload ownership: this layer owns the internal
+// `TurboQuantShardedLinear` which in turn retains the MLXArray tensor
+// payloads (packed indices, norms, codebooks) as stored properties so
+// MLX keeps the backing buffers alive for the lifetime of the C++
+// handle.
 
 import Foundation
 import MLX
@@ -25,31 +44,92 @@ public final class TurboQuantShardedToAllLinear: Module, TurboQuantShardedLayer 
     public let rankInputDim: Int
     public let group: DistributedGroup
 
-    // Rank-local weight. In Phase 3 this is fp16 (matmul-ready) until
-    // Task 9 wires the TQ kernel; after Task 9 this storage moves to
-    // codebook + indices + rotation held by the layer.
-    private let rankWeight: MLXArray
+    // Rank-local TQ kernel. Owns the opaque tq_linear_t handle and
+    // retains the tensor payloads for the kernel's lifetime.
+    private let kernel: TurboQuantShardedLinear
 
+    /// Build a row-parallel TQ linear layer from the loader's
+    /// rank-local tensor payloads. The packed-index tensors must
+    /// already be sliced along the input-dim axis for this rank;
+    /// norms and codebooks are broadcast unchanged (per Task 9a.1:
+    /// rotation is block-local and per-row state is identical across
+    /// ranks — only the input-block bytes differ).
+    ///
+    /// Shape contract (per `turboquant_c.h`, row-parallel case):
+    /// - `packedPrimary` / `packedResidual`: uint8 packed along a
+    ///   row-major `[rankOutFeatures, localInFeatures * bits / 8]`
+    ///   layout (residual may be empty when `residualBits == 0`).
+    /// - `norms`: `[rankOutFeatures]` fp16/fp32, shared across ranks.
+    /// - `primaryCodebook` / `residualCodebook`: shared across the
+    ///   layer (not sharded) — the loader passes the full codebook to
+    ///   every rank.
+    ///
+    /// Preconditions:
+    /// - `fullInFeatures` must be divisible by `worldSize * blockSize`
+    ///   so rotation / per-block norm semantics factorize cleanly
+    ///   across shards (Task 9a.1 finding).
+    /// - `localInFeatures * worldSize == fullInFeatures`.
     public init(
-        rankWeight: MLXArray,
-        rankOutputDim: Int,
-        rankInputDim: Int,
+        fullInFeatures: Int,
+        rankOutFeatures: Int,
+        localInFeatures: Int,
+        primaryBits: Int,
+        residualBits: Int,
+        packedPrimary: MLXArray,
+        packedResidual: MLXArray,
+        norms: MLXArray,
+        primaryCodebook: MLXArray,
+        residualCodebook: MLXArray,
+        seedPrimary: UInt32,
+        seedResidual: UInt32,
+        blockSize: Int,
         group: DistributedGroup
-    ) {
-        self.rankWeight = rankWeight
-        self.rankOutputDim = rankOutputDim
-        self.rankInputDim = rankInputDim
+    ) throws {
+        let worldSize = group.size
+        precondition(
+            fullInFeatures % (worldSize * blockSize) == 0,
+            "row-parallel TQ sharding requires fullInFeatures divisible " +
+            "by worldSize * blockSize (Task 9a.1 finding); got " +
+            "fullInFeatures=\(fullInFeatures), worldSize=\(worldSize), " +
+            "blockSize=\(blockSize)"
+        )
+        precondition(
+            localInFeatures * worldSize == fullInFeatures,
+            "row-parallel localInFeatures must equal " +
+            "fullInFeatures / worldSize; got localInFeatures=" +
+            "\(localInFeatures), worldSize=\(worldSize), " +
+            "fullInFeatures=\(fullInFeatures)"
+        )
+
+        self.kernel = try TurboQuantShardedLinear(
+            fullInFeatures: fullInFeatures,
+            localInFeatures: localInFeatures,
+            rankOutFeatures: rankOutFeatures,
+            primaryBits: primaryBits,
+            residualBits: residualBits,
+            packedPrimary: packedPrimary,
+            packedResidual: packedResidual,
+            norms: norms,
+            primaryCodebook: primaryCodebook,
+            residualCodebook: residualCodebook,
+            seedPrimary: seedPrimary,
+            seedResidual: seedResidual,
+            blockSize: blockSize
+        )
+        self.rankOutputDim = rankOutFeatures
+        self.rankInputDim = localInFeatures
         self.group = group
         super.init()
     }
 
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
-        // Row-parallel: x is (..., rankInputDim). Per-rank matmul
-        // against W^T where W is (rankOutputDim, rankInputDim) produces
-        // a partial (..., rankOutputDim). allSum accumulates partials
-        // across ranks to yield the full replicated output. On a
-        // size-1 group allSum is an identity op.
-        let partial = MLX.matmul(x, rankWeight.transposed(-1, -2))
+        // Row-parallel: x is (..., localInFeatures) — this rank has
+        // already received its input-dim slice. The TQ kernel produces
+        // a partial (..., rankOutFeatures) along the full output dim;
+        // group.allSum accumulates partials across ranks to yield the
+        // replicated full output. On a size-1 group allSum is an
+        // identity op and the partial IS the full answer.
+        let partial = kernel.callAsFunction(x)
         return group.allSum(partial)
     }
 }
