@@ -171,6 +171,7 @@ let package = Package(
             sources: [
                 "TurboQuant/TurboQuantBridgeTests.swift",
                 "TurboQuant/TurboQuantModelLoaderTests.swift",
+                "TurboQuant/TurboQuantShardedLinearTests.swift",
                 "TurboQuant/DistributedCoordinatorTests.swift",
                 "TurboQuant/ClusterPlanBuilderTests.swift",
                 "TurboQuant/MemoryCalculatorTests.swift",
