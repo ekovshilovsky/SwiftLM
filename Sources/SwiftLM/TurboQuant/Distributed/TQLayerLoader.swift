@@ -483,6 +483,115 @@ public func loadFullTQLayerPayload(
     )
 }
 
+// MARK: - Embedding-table materialisation
+
+/// Errors raised by `materialiseEmbeddingTable`.
+public enum TQEmbeddingMaterialisationError: Error, CustomStringConvertible {
+    /// The TQ kernel returned an unexpected shape from the identity-
+    /// matrix dequant. Indicates either a layer-payload corruption or
+    /// a mismatched (hiddenSize, vocabSize) pair against the on-disk
+    /// embedding tensor.
+    case shapeMismatch(expected: [Int], got: [Int])
+
+    public var description: String {
+        switch self {
+        case .shapeMismatch(let expected, let got):
+            return "embedding dequant produced shape \(got); expected \(expected)"
+        }
+    }
+}
+
+/// Materialise an embedding table by running the TurboQuant kernel on
+/// the named layer's packed payload with an identity-matrix input.
+///
+/// The TQ kernel computes `output = input @ W^T`, so feeding `I_H`
+/// recovers `W^T` of shape `(hiddenSize, vocabSize)`; the result is
+/// transposed back to the standard `(vocabSize, hiddenSize)` row table
+/// suitable for both `MLX.take`-based token lookup and a transposed
+/// matmul for the lm_head projection. The return value is materialised
+/// (`MLX.eval`) before being handed back so callers can read its shape
+/// and reuse the same `MLXArray` instance for both embedding and tied
+/// lm_head weights without an extra evaluation step.
+///
+/// The materialisation cost (~one TQ matmul of size H x V plus the
+/// V x H allocation) is paid once at construction and is the
+/// motivation for sharing this helper across models — duplicating the
+/// dequant logic risks divergent numerical paths between the oracle
+/// and the distributed model.
+///
+/// - Parameters:
+///   - modelDir: TurboQuant-converted model root.
+///   - metadata: Decoded shard metadata sidecar.
+///   - embeddingLayerName: Sidecar layer name for the embedding (e.g.
+///     `model.embed_tokens`).
+///   - hiddenSize: Token-embedding dimension (model `hidden_size`).
+///   - vocabSize: Vocabulary count (model `vocab_size`).
+///   - primaryBits: Primary-stage bit width.
+///   - residualBits: Residual-stage bit width.
+/// - Returns: A materialised `[vocabSize, hiddenSize]` float16 row
+///   table.
+public func materialiseEmbeddingTable(
+    modelDir: URL,
+    metadata: ShardMetadata,
+    embeddingLayerName: String,
+    hiddenSize: Int,
+    vocabSize: Int,
+    primaryBits: Int,
+    residualBits: Int
+) throws -> MLXArray {
+    let payload = try loadFullTQLayerPayload(
+        modelDir: modelDir,
+        metadata: metadata,
+        layerName: embeddingLayerName,
+        primaryBits: primaryBits,
+        residualBits: residualBits
+    )
+    precondition(
+        payload.outFeatures == vocabSize,
+        "\(embeddingLayerName) out dim \(payload.outFeatures) != vocabSize \(vocabSize)"
+    )
+    precondition(
+        payload.inFeatures == hiddenSize,
+        "\(embeddingLayerName) in dim \(payload.inFeatures) != hiddenSize \(hiddenSize)"
+    )
+
+    let kernel = try TurboQuantShardedLinear(
+        fullInFeatures: payload.inFeatures,
+        localInFeatures: payload.inFeatures,
+        rankOutFeatures: payload.outFeatures,
+        primaryBits: primaryBits,
+        residualBits: residualBits,
+        packedPrimary: payload.packedPrimary,
+        packedResidual: payload.packedResidual,
+        norms: payload.norms,
+        primaryCodebook: payload.primaryCodebook,
+        residualCodebook: payload.residualCodebook,
+        seedPrimary: payload.seedPrimary,
+        seedResidual: payload.seedResidual,
+        blockSize: payload.blockSize
+    )
+
+    let identity = MLXArray.eye(hiddenSize, dtype: .float16)
+    MLX.eval(identity)
+    let dequantWT = kernel(identity)
+    // Force evaluation so the subsequent transpose operates on
+    // concrete storage rather than a lazy graph node. The kernel
+    // already materialises its output across the FFI boundary; this
+    // eval call ensures the wrapped MLXArray's backing has settled
+    // before we read its shape.
+    MLX.eval(dequantWT)
+
+    guard dequantWT.shape == [hiddenSize, vocabSize] else {
+        throw TQEmbeddingMaterialisationError.shapeMismatch(
+            expected: [hiddenSize, vocabSize],
+            got: dequantWT.shape
+        )
+    }
+    let table = dequantWT.transposed(1, 0).asType(.float16)
+    MLX.eval(table)
+    return table
+}
+
 // MARK: - Sharded loading
 
 /// Sharding role for a TQ linear layer. Determines which axes of the

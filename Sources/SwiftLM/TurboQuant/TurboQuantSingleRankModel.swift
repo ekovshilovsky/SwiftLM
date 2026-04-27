@@ -196,65 +196,32 @@ public final class TurboQuantSingleRankModel {
 
         // Materialise the embedding table by running the TQ kernel on
         // the embedding's packed payload with an identity-matrix
-        // input. The kernel computes `output = input @ W^T`, so
-        // input = I_H produces W^T of shape `(hiddenSize,
-        // vocabSize)`; transposing recovers `(vocabSize, hiddenSize)`.
-        // The materialisation cost (~600 MB allocation plus one TQ
-        // matmul of size H x V) is paid once at construction; the
-        // resulting table is reused by both the forward-pass
-        // embedding lookup and the lm_head matmul when
-        // `tie_word_embeddings` is true.
-        let embedPayload = try loadFullTQLayerPayload(
-            modelDir: modelDir,
-            metadata: metadata,
-            layerName: "model.embed_tokens",
-            primaryBits: primaryBits,
-            residualBits: residualBits
-        )
-        precondition(
-            embedPayload.outFeatures == config.vocabSize,
-            "embed_tokens out dim \(embedPayload.outFeatures) != vocabSize \(config.vocabSize)"
-        )
-        precondition(
-            embedPayload.inFeatures == config.hiddenSize,
-            "embed_tokens in dim \(embedPayload.inFeatures) != hiddenSize \(config.hiddenSize)"
-        )
-
-        let embedKernel = try TurboQuantShardedLinear(
-            fullInFeatures: embedPayload.inFeatures,
-            localInFeatures: embedPayload.inFeatures,
-            rankOutFeatures: embedPayload.outFeatures,
-            primaryBits: primaryBits,
-            residualBits: residualBits,
-            packedPrimary: embedPayload.packedPrimary,
-            packedResidual: embedPayload.packedResidual,
-            norms: embedPayload.norms,
-            primaryCodebook: embedPayload.primaryCodebook,
-            residualCodebook: embedPayload.residualCodebook,
-            seedPrimary: embedPayload.seedPrimary,
-            seedResidual: embedPayload.seedResidual,
-            blockSize: embedPayload.blockSize
-        )
-
-        let identity = MLXArray.eye(config.hiddenSize, dtype: .float16)
-        MLX.eval(identity)
-        let dequantWT = embedKernel(identity)
-        // Force evaluation so the subsequent transpose operates on
-        // concrete storage rather than a lazy graph node. The kernel
-        // already materialises its output across the FFI boundary;
-        // this eval call ensures the wrapped MLXArray's backing has
-        // settled before we read its shape.
-        MLX.eval(dequantWT)
-
-        guard dequantWT.shape == [config.hiddenSize, config.vocabSize] else {
-            throw TurboQuantSingleRankModelError.embeddingDequantShapeMismatch(
-                expected: [config.hiddenSize, config.vocabSize],
-                got: dequantWT.shape
+        // input. The materialisation cost (~one TQ matmul of size
+        // H x V plus the V x H allocation) is paid once at
+        // construction; the resulting table is reused by both the
+        // forward-pass embedding lookup and the lm_head matmul when
+        // `tie_word_embeddings` is true. The helper is shared with
+        // `DistributedQwenModel` so both code paths run an identical
+        // dequant.
+        do {
+            self.embeddingTable = try materialiseEmbeddingTable(
+                modelDir: modelDir,
+                metadata: metadata,
+                embeddingLayerName: "model.embed_tokens",
+                hiddenSize: config.hiddenSize,
+                vocabSize: config.vocabSize,
+                primaryBits: primaryBits,
+                residualBits: residualBits
             )
+        } catch let error as TQEmbeddingMaterialisationError {
+            switch error {
+            case .shapeMismatch(let expected, let got):
+                throw TurboQuantSingleRankModelError.embeddingDequantShapeMismatch(
+                    expected: expected,
+                    got: got
+                )
+            }
         }
-        let table = dequantWT.transposed(1, 0).asType(.float16)
-        MLX.eval(table)
-        self.embeddingTable = table
 
         // Final norm scale. Qwen2.5-Coder-3B stores it as bfloat16 in
         // the passthrough file; load it as-is so MLXFast.rmsNorm
