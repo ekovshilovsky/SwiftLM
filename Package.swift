@@ -171,6 +171,7 @@ let package = Package(
             sources: [
                 "TurboQuant/TurboQuantBridgeTests.swift",
                 "TurboQuant/TurboQuantModelLoaderTests.swift",
+                "TurboQuant/TurboQuantShardedLinearTests.swift",
                 "TurboQuant/DistributedCoordinatorTests.swift",
                 "TurboQuant/ClusterPlanBuilderTests.swift",
                 "TurboQuant/MemoryCalculatorTests.swift",
@@ -189,6 +190,7 @@ let package = Package(
                 "TurboQuant/Distributed/ShardMetadataTests.swift",
                 "TurboQuant/Distributed/ShardOffsetCalculatorTests.swift",
                 "TurboQuant/Distributed/TurboQuantAllToShardedLinearTests.swift",
+                "TurboQuant/Distributed/TurboQuantShardedLinearEndToEndTests.swift",
                 "TurboQuant/Distributed/TurboQuantShardedToAllLinearTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
                 "TurboQuant/Integration/UpstreamRegressionTests.swift",
