@@ -100,157 +100,15 @@ final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
         }
     }
 
-    // MARK: - Safetensors header parsing
+    // MARK: - Fixture loading
     //
-    // Local minimal parser — the shard sidecar only names the .weight
-    // tensors, but the TQ kernel needs the packed indices, norms,
-    // seeds, and codebooks, all of which live as separate safetensors
-    // entries. Parses the 8-byte little-endian header length followed
-    // by the JSON header and returns a map from tensor name to
-    // (dtype, shape, absolute byte offset, byte length in the file).
-
-    private struct SafetensorsEntry {
-        let dtype: String
-        let shape: [Int]
-        let absoluteOffset: Int   // offset from the start of the file
-        let length: Int
-    }
-
-    private static func parseSafetensorsHeader(
-        fileURL: URL
-    ) throws -> [String: SafetensorsEntry] {
-        let handle = try FileHandle(forReadingFrom: fileURL)
-        defer { try? handle.close() }
-
-        guard let lenBytes = try handle.read(upToCount: 8),
-              lenBytes.count == 8
-        else {
-            throw NSError(
-                domain: "SafetensorsHeader",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "header length truncated"]
-            )
-        }
-        let headerLen = lenBytes.withUnsafeBytes { ptr -> UInt64 in
-            ptr.load(as: UInt64.self)
-        }
-        guard let headerData = try handle.read(upToCount: Int(headerLen)),
-              headerData.count == Int(headerLen)
-        else {
-            throw NSError(
-                domain: "SafetensorsHeader",
-                code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "header body truncated"]
-            )
-        }
-        let dataStart = 8 + Int(headerLen)
-
-        let json = try JSONSerialization.jsonObject(with: headerData, options: [])
-        guard let dict = json as? [String: Any] else {
-            throw NSError(
-                domain: "SafetensorsHeader",
-                code: 3,
-                userInfo: [NSLocalizedDescriptionKey: "root is not an object"]
-            )
-        }
-
-        var out: [String: SafetensorsEntry] = [:]
-        out.reserveCapacity(dict.count)
-        for (name, value) in dict {
-            if name == "__metadata__" { continue }
-            guard let entry = value as? [String: Any],
-                  let dtype = entry["dtype"] as? String,
-                  let shapeAny = entry["shape"] as? [Any],
-                  let offsets = entry["data_offsets"] as? [Any],
-                  offsets.count == 2
-            else { continue }
-            let shape = shapeAny.compactMap { ($0 as? NSNumber)?.intValue }
-            guard shape.count == shapeAny.count else { continue }
-            let startRel = (offsets[0] as? NSNumber)?.intValue ?? -1
-            let endRel = (offsets[1] as? NSNumber)?.intValue ?? -1
-            guard startRel >= 0, endRel >= startRel else { continue }
-            out[name] = SafetensorsEntry(
-                dtype: dtype,
-                shape: shape,
-                absoluteOffset: dataStart + startRel,
-                length: endRel - startRel
-            )
-        }
-        return out
-    }
-
-    // MARK: - MLXArray loading helpers
-
-    private static func loadUInt8Array(
-        fileURL: URL, entry: SafetensorsEntry
-    ) throws -> MLXArray {
-        XCTAssertEqual(entry.dtype, "U8", "expected U8 dtype")
-        let reader = ShardAwareSafetensorsReader(fileURL: fileURL)
-        let range = ShardOffsetCalculator.SliceRange(
-            offset: entry.absoluteOffset,
-            length: entry.length,
-            strategy: .replicated,
-            rankOutputDim: nil,
-            rankInputDim: nil
-        )
-        let data = try reader.readContiguousRange(range)
-        return MLXArray(data, entry.shape, type: UInt8.self)
-    }
-
-    private static func loadFloat32Array(
-        fileURL: URL, entry: SafetensorsEntry
-    ) throws -> MLXArray {
-        XCTAssertEqual(entry.dtype, "F32", "expected F32 dtype")
-        let reader = ShardAwareSafetensorsReader(fileURL: fileURL)
-        let range = ShardOffsetCalculator.SliceRange(
-            offset: entry.absoluteOffset,
-            length: entry.length,
-            strategy: .replicated,
-            rankOutputDim: nil,
-            rankInputDim: nil
-        )
-        let data = try reader.readContiguousRange(range)
-        return MLXArray(data, entry.shape, dtype: DType.float32)
-    }
-
-    private static func loadUInt32Array(
-        fileURL: URL, entry: SafetensorsEntry
-    ) throws -> [UInt32] {
-        XCTAssertEqual(entry.dtype, "U32", "expected U32 dtype")
-        let reader = ShardAwareSafetensorsReader(fileURL: fileURL)
-        let range = ShardOffsetCalculator.SliceRange(
-            offset: entry.absoluteOffset,
-            length: entry.length,
-            strategy: .replicated,
-            rankOutputDim: nil,
-            rankInputDim: nil
-        )
-        let data = try reader.readContiguousRange(range)
-        let n = data.count / MemoryLayout<UInt32>.size
-        return data.withUnsafeBytes { raw -> [UInt32] in
-            let bound = raw.bindMemory(to: UInt32.self)
-            return Array(bound.prefix(n))
-        }
-    }
-
-    // MARK: - Fixture victim loading
-    //
-    // Composite of a single TQ layer's four companion tensors plus
-    // scalar metadata. Enough to construct a rank-local
-    // `TurboQuantShardedLinear` or its sharded-variant wrappers.
-
-    private struct TQLayerPayload {
-        let packedPrimary: MLXArray   // U8 [outFeatures, inFeatures * bits / 8]
-        let packedResidual: MLXArray  // U8 [outFeatures, inFeatures * bits / 8]
-        let norms: MLXArray           // F32 [outFeatures]
-        let primaryCodebook: MLXArray // F32 [2^primary_bits]
-        let residualCodebook: MLXArray // F32 [2^residual_bits]
-        let seedPrimary: UInt32
-        let seedResidual: UInt32
-        let blockSize: Int
-        let outFeatures: Int
-        let inFeatures: Int
-    }
+    // The header parser, MLXArray companion-tensor readers, and the
+    // `TQLayerPayload` shape used to live inline here. They graduated
+    // to `Sources/SwiftLM/TurboQuant/Distributed/TQLayerLoader.swift`
+    // so `DistributedQwenModel` and these end-to-end tests share one
+    // loader implementation. This thin wrapper keeps the test sites
+    // unchanged: it loads the full unsliced payload and lets each
+    // test do its own in-process slicing via direct MLXArray indexing.
 
     private static func loadTQLayer(
         rootURL: URL,
@@ -260,87 +118,12 @@ final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
         let sidecarData = try Data(contentsOf: sidecarURL)
         let sidecar = try ShardMetadata(jsonData: sidecarData)
 
-        guard let weightEntry = sidecar.tensors["\(layerName).weight"] else {
-            throw NSError(
-                domain: "Fixture", code: 10,
-                userInfo: [NSLocalizedDescriptionKey: "sidecar missing \(layerName).weight"]
-            )
-        }
-        // Weight shape is [outFeatures, inFeatures] as written by the
-        // convert tool (HuggingFace convention).
-        XCTAssertEqual(weightEntry.shape.count, 2, "weight must be 2D")
-        let outFeatures = weightEntry.shape[0]
-        let inFeatures = weightEntry.shape[1]
-
-        let safetensorsURL = rootURL.appendingPathComponent(weightEntry.file)
-        let header = try parseSafetensorsHeader(fileURL: safetensorsURL)
-
-        func required(_ name: String) throws -> SafetensorsEntry {
-            guard let e = header[name] else {
-                throw NSError(
-                    domain: "Fixture", code: 11,
-                    userInfo: [NSLocalizedDescriptionKey: "safetensors missing \(name)"]
-                )
-            }
-            return e
-        }
-
-        let packedPrimaryEntry = try required("\(layerName).packed_primary")
-        let packedResidualEntry = try required("\(layerName).packed_residual")
-        let normsEntry = try required("\(layerName).norms")
-        let seedsEntry = try required("\(layerName).seeds")
-
-        // Codebooks are stored once per model, not per layer. Try a
-        // layer-local codebook key first (future-compatible) and fall
-        // back to the whole-model shared codebook actually shipped in
-        // the Phase 3 fixture.
-        let primaryCodebookEntry: SafetensorsEntry
-        if let entry = header["\(layerName).codebook_primary"] {
-            primaryCodebookEntry = entry
-        } else {
-            primaryCodebookEntry = try required("tq_codebook_primary")
-        }
-        let residualCodebookEntry: SafetensorsEntry
-        if let entry = header["\(layerName).codebook_residual"] {
-            residualCodebookEntry = entry
-        } else {
-            residualCodebookEntry = try required("tq_codebook_residual")
-        }
-
-        let packedPrimary = try loadUInt8Array(
-            fileURL: safetensorsURL, entry: packedPrimaryEntry)
-        let packedResidual = try loadUInt8Array(
-            fileURL: safetensorsURL, entry: packedResidualEntry)
-        let norms = try loadFloat32Array(
-            fileURL: safetensorsURL, entry: normsEntry)
-        let primaryCodebook = try loadFloat32Array(
-            fileURL: safetensorsURL, entry: primaryCodebookEntry)
-        let residualCodebook = try loadFloat32Array(
-            fileURL: safetensorsURL, entry: residualCodebookEntry)
-
-        let seeds = try loadUInt32Array(
-            fileURL: safetensorsURL, entry: seedsEntry)
-        guard seeds.count >= 3 else {
-            throw NSError(
-                domain: "Fixture", code: 12,
-                userInfo: [NSLocalizedDescriptionKey: "seeds tensor must have >= 3 elements"]
-            )
-        }
-        let seedPrimary = seeds[0]
-        let seedResidual = seeds[1]
-        let blockSize = Int(seeds[2])
-
-        return TQLayerPayload(
-            packedPrimary: packedPrimary,
-            packedResidual: packedResidual,
-            norms: norms,
-            primaryCodebook: primaryCodebook,
-            residualCodebook: residualCodebook,
-            seedPrimary: seedPrimary,
-            seedResidual: seedResidual,
-            blockSize: blockSize,
-            outFeatures: outFeatures,
-            inFeatures: inFeatures
+        return try loadFullTQLayerPayload(
+            modelDir: rootURL,
+            metadata: sidecar,
+            layerName: layerName,
+            primaryBits: Self.primaryBits,
+            residualBits: Self.residualBits
         )
     }
 
