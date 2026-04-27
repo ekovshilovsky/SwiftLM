@@ -41,31 +41,23 @@ import MLX
 /// this file parses the safetensors header itself to locate the
 /// companion tensors. When the fixture is absent we skip cleanly.
 ///
-/// ## Task 9a.6 Finding: Task 9a.3 pointer-type bug
+/// ## Task 9a.6 Finding: cross-runtime eval boundary
 ///
-/// The whole-weight forward produces an all-zero output on real
-/// fixture data, which propagates to both sharded proofs (0 == 0
-/// trivially). Root cause: `TurboQuantShardedLinear.init` forwards
-/// `MLXArray.ctx.ctx` (a live `mlx::core::array*`) to the C API's
-/// `tq_linear_create_shard`, but the C API's implementation in
-/// `turboquant_c.cpp` casts those `const void*` arguments to
-/// `const uint8_t*` / `const float*` raw data pointers and copies
-/// from them (see lines 407-430). The result is that the MLX array's
-/// metadata header is reinterpreted as packed index / norm bytes,
-/// producing garbage indices that collapse to centroid-0 (zero) for
-/// most of the weight matrix.
+/// libturboquant_mlx.dylib links Homebrew's libmlx, while the Swift
+/// bridge links mlx-swift's Cmlx — two distinct MLX runtimes co-resident
+/// in the test process. A lazy output array scheduled inside the kernel
+/// belongs to the dylib's runtime; calling `eval()` through the Swift-
+/// side MLXArray wrapper runs against the Cmlx runtime instead, and the
+/// kernel's compute node never gets materialised. The consumer observes
+/// a freshly allocated but never-populated buffer — uniform zeros across
+/// the whole output. The fix lives in `fused_dequant_matmul` in the core
+/// repo, which now `eval()`s the output before returning so the kernel
+/// runs inside the runtime that scheduled it.
 ///
-/// The C API is consistent with its `tq_linear_forward` signature,
-/// which DOES take an `mlx::core::array*` and casts accordingly
-/// (line 465 of turboquant_c.cpp). The asymmetry between the two
-/// C API entry points is the real defect — either the bridge needs
-/// an extraction step that reads packed raw bytes out of the MLX
-/// arrays and passes those, or the C API needs a consistent
-/// `mlx::core::array*` signature for `create_shard`.
-///
-/// This file's assertions catch the zero-output condition explicitly
-/// so the test fails loudly rather than silently passing a
-/// zero-vs-zero comparison.
+/// The zero-output guards below remain as a regression backstop: if the
+/// cross-runtime materialisation path ever drifts again, both sharded
+/// proofs would otherwise silently degenerate to a 0-vs-0 comparison
+/// that trivially satisfies any relative-error tolerance.
 final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
 
     // MARK: - Fixture configuration
