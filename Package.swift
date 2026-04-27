@@ -193,6 +193,7 @@ let package = Package(
                 "TurboQuant/Distributed/TurboQuantShardedLinearEndToEndTests.swift",
                 "TurboQuant/Distributed/TurboQuantShardedToAllLinearTests.swift",
                 "TurboQuant/Distributed/ReplicatedEmbeddingTests.swift",
+                "TurboQuant/Distributed/DistributedQwenModelTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
                 "TurboQuant/Integration/UpstreamRegressionTests.swift",
             ],
