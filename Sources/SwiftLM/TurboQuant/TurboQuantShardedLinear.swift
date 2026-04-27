@@ -14,7 +14,7 @@ import Cmlx
 /// Wraps an opaque `tq_linear_t` handle constructed from rank-local compressed
 /// weight tensors: quantization indices (primary + optional residual),
 /// per-row norms, and the two Lloyd-Max codebooks. The loader side
-/// (`ShardAwareSafetensorsReader`, Task 5) produces already-sliced byte
+/// (`ShardAwareSafetensorsReader`) produces already-sliced byte
 /// ranges for the rank; this wrapper is responsible only for handing those
 /// ranges to the fused kernel via the C boundary and lifting the returned
 /// activation back into Swift as an MLXArray.
@@ -196,7 +196,7 @@ public final class TurboQuantShardedLinear {
         // accesses the array's data directly via `data<T>()`, which
         // requires the graph to be evaluated; an unevaluated input
         // hands the kernel an empty buffer and silently produces
-        // zeros (Task 9a.6 finding).
+        // zeros (the kernel reads `input.ctx` directly via `data<T>()`).
         input.eval()
         let outputPtr = tq_linear_forward(
             handle,

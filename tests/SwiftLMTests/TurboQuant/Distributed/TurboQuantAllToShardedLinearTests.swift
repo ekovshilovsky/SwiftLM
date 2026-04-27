@@ -3,26 +3,26 @@ import Foundation
 import MLX
 @testable import TurboQuantKit
 
-/// Task 9a.4 replaced the Task 7 stub (MLX.matmul over a pre-
-/// dequantized fp16 `rankWeight`) with a `TurboQuantShardedLinear`-
-/// backed forward that takes TQ-compressed payloads directly — packed
-/// indices, norms, Lloyd-Max codebooks, and rotation seeds. The Task 7
-/// concat-vs-full-matmul test no longer fits the constructor surface
-/// because no plain `MLXArray` weight is accepted.
+/// `TurboQuantAllToShardedLinear` takes TQ-compressed payloads
+/// directly — packed indices, norms, Lloyd-Max codebooks, and rotation
+/// seeds — and dispatches into `TurboQuantShardedLinear` under the
+/// hood. There is no plain `MLXArray` weight on the constructor surface,
+/// so a concat-vs-full-matmul test on a synthetic dequantized weight is
+/// not expressible against the current API.
 ///
 /// Rigging synthetic TQ payloads purely in Swift (valid packed indices
 /// matching generated codebook centroids, per-row norms consistent
 /// with the rotation, and the correct block-size partitioning) would
-/// reimplement a slice of the offline quantizer here. The real Tier 3
+/// reimplement a slice of the offline quantizer here. The numerical
 /// proof — concat of two rank slices matches a whole-weight TQ forward
-/// within fp16 tolerance — lands in Task 9a.6 on top of the Phase 3
-/// fixture (`Qwen2.5-Coder-3B-TQ8`) where a valid column-parallel
+/// within fp16 tolerance — lives in the end-to-end suite that runs on
+/// the Qwen2.5-Coder-3B-TQ8 fixture, where a valid column-parallel
 /// payload already exists on disk.
 ///
 /// This file retains the metallib side-load workaround and a compile
-/// gate that references every new parameter of the reworked
-/// constructor: if the API surface drifts the build fails here rather
-/// than at the first downstream caller.
+/// gate that references every parameter of the constructor: if the
+/// API surface drifts the build fails here rather than at the first
+/// downstream caller.
 final class TurboQuantAllToShardedLinearTests: XCTestCase {
 
     /// SwiftPM's `swift test` harness does not emit the Cmlx metal
@@ -60,11 +60,11 @@ final class TurboQuantAllToShardedLinearTests: XCTestCase {
         }
     }
 
-    /// Compile gate for the Task 9a.4 constructor rewrite. References
-    /// every new parameter by name so a signature drift here surfaces
-    /// at build time rather than at the first real caller. Reaching
-    /// the XCTSkip proves the Swift API matches what the layer exposes
-    /// today; the numerical Tier 3 proof is Task 9a.6's responsibility.
+    /// Compile gate for the TQ-kernel-backed constructor. References
+    /// every parameter by name so a signature drift here surfaces at
+    /// build time rather than at the first real caller. Reaching the
+    /// XCTSkip proves the Swift API matches what the layer exposes
+    /// today; the numerical proof lives in the end-to-end suite.
     func testTQKernelWiringCompileGate() throws {
         let initRef = TurboQuantAllToShardedLinear.init(
             fullInFeatures:
@@ -84,10 +84,10 @@ final class TurboQuantAllToShardedLinearTests: XCTestCase {
         _ = initRef
 
         throw XCTSkip(
-            "Tier 3 numerical proof (two-rank concat vs whole-weight " +
-            "TQ forward) is deferred to Task 9a.6, which runs on the " +
-            "Phase 3 Qwen2.5-Coder-3B-TQ8 fixture. Reaching this skip " +
-            "proves the TQ-kernel-backed constructor surface compiles."
+            "Numerical proof (two-rank concat vs whole-weight TQ " +
+            "forward) lives in the end-to-end suite that runs on the " +
+            "Qwen2.5-Coder-3B-TQ8 fixture. Reaching this skip proves " +
+            "the TQ-kernel-backed constructor surface compiles."
         )
     }
 }

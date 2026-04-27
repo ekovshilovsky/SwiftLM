@@ -8,10 +8,9 @@
 // along the output dim for downstream consumers (the row-parallel
 // layer at the next boundary allSums its own partial).
 //
-// Task 9a.4 wires this layer to the real TQ kernel via the
-// `TurboQuantShardedLinear` Swift bridge (Task 9a.3), replacing the
-// Task 7 MLX.matmul stub that operated on a pre-dequantized fp16
-// weight. Column-parallel semantics mean `localInFeatures` equals
+// The layer wraps a `TurboQuantShardedLinear` Swift bridge, which
+// dispatches into the shard-aware TQ kernel on the rank-local payload.
+// Column-parallel semantics mean `localInFeatures` equals
 // `fullInFeatures` (the input is replicated across ranks); the C
 // layer uses `fullInFeatures` to compute the correct combined_scale
 // so per-shard rescale does not drift.

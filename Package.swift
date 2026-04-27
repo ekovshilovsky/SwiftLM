@@ -169,6 +169,7 @@ let package = Package(
             dependencies: ["TurboQuantKit"],
             path: "tests/SwiftLMTests",
             sources: [
+                "TurboQuant/TestFixtureLocator.swift",
                 "TurboQuant/TurboQuantBridgeTests.swift",
                 "TurboQuant/TurboQuantModelLoaderTests.swift",
                 "TurboQuant/TurboQuantShardedLinearTests.swift",

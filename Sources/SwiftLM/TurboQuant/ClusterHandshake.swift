@@ -361,7 +361,7 @@ public func runClusterHandshakeJoiner(
     // the remaining bytes after the type byte and the GCM nonce. The
     // length of the working key is implicitly the ciphertext length —
     // callers of this module agree elsewhere on what that key looks
-    // like (currently 32 bytes in the Phase 1 primitives).
+    // like (currently 32 bytes — `ClusterAuth.masterKeyLength`).
     let sealedType = try await endpoint.recv(1)
     guard sealedType.first == Proto.msgSealedKey else {
         throw ClusterHandshakeError.protocolVersionMismatch
@@ -370,8 +370,9 @@ public func runClusterHandshakeJoiner(
 
     // We do not know the ciphertext length from the wire because it is
     // the working-key length, which is a deployment-wide constant. Use
-    // Phase 1's 32-byte working key size. If this ever needs to change
-    // it becomes a length-prefixed field in a new protocol version.
+    // the 32-byte working key size (`ClusterAuth.masterKeyLength`). If
+    // this ever needs to change it becomes a length-prefixed field in a
+    // new protocol version.
     let ciphertextLength = ClusterAuth.masterKeyLength
     let ciphertext = try await endpoint.recv(ciphertextLength)
     let tag = try await endpoint.recv(Proto.gcmTagLength)

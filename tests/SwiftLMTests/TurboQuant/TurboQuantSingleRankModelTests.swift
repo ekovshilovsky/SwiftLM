@@ -14,11 +14,6 @@ import MLX
 /// The fixture is large; the tests skip cleanly when it is absent.
 final class TurboQuantSingleRankModelTests: XCTestCase {
 
-    /// Phase 3 fixture root used by every model-level test.
-    private static let fixtureRoot = URL(fileURLWithPath:
-        "/Users/eugenekovshilovsky/Code/turboquant-mlx-models/converted/Qwen2.5-Coder-3B-TQ8"
-    )
-
     override class func setUp() {
         super.setUp()
         installMetallibIfMissing()
@@ -50,17 +45,20 @@ final class TurboQuantSingleRankModelTests: XCTestCase {
         }
     }
 
-    private func skipIfFixtureMissing() throws {
-        let fm = FileManager.default
-        let sidecar = Self.fixtureRoot.appendingPathComponent("tq_shard_metadata.json")
-        let configFile = Self.fixtureRoot.appendingPathComponent("config.json")
-        if !fm.fileExists(atPath: sidecar.path) || !fm.fileExists(atPath: configFile.path) {
+    /// Resolves the Qwen2.5-Coder-3B fixture root, additionally requiring the
+    /// `config.json` companion to be present. Throws `XCTSkip` if
+    /// `TQ_FIXTURE_DIR` is unset or either file is missing.
+    private func resolvedFixtureRoot() throws -> URL {
+        let root = try TurboQuantTestFixtures.requireQwenCoder3B()
+        let configFile = root.appendingPathComponent("config.json")
+        if !FileManager.default.fileExists(atPath: configFile.path) {
             throw XCTSkip(
-                "Phase 3 fixture not present at \(Self.fixtureRoot.path). " +
-                "TurboQuantSingleRankModel forward-pass tests require the " +
-                "Qwen2.5-Coder-3B-TQ8 model (Task 1a install)."
+                "Qwen2.5-Coder-3B fixture at \(root.path) is missing config.json; " +
+                "TurboQuantSingleRankModel forward-pass tests require a " +
+                "complete Qwen2.5-Coder-3B-TQ8 layout."
             )
         }
+        return root
     }
 
     // MARK: - Test 1: forward on a small prompt
@@ -73,9 +71,9 @@ final class TurboQuantSingleRankModelTests: XCTestCase {
     /// oracle: anything broken upstream of the lm_head matmul surfaces
     /// here as a NaN, all-zero, or out-of-range argmax.
     func testModelLoadsAndRunsForwardPassOnSmallPrompt() throws {
-        try skipIfFixtureMissing()
+        let fixtureRoot = try resolvedFixtureRoot()
 
-        let model = try TurboQuantSingleRankModel(directory: Self.fixtureRoot)
+        let model = try TurboQuantSingleRankModel(directory: fixtureRoot)
 
         // Diagnostic: check the materialised embedding table is real
         // (non-zero, finite) before running the forward pass. A
@@ -141,10 +139,10 @@ final class TurboQuantSingleRankModelTests: XCTestCase {
     /// (e.g. seed mismatch between runs) and any buffer-aliasing bug
     /// where the second construction's dequant overwrites the first.
     func testEmbeddingTableMaterialisationIsStable() throws {
-        try skipIfFixtureMissing()
+        let fixtureRoot = try resolvedFixtureRoot()
 
-        let modelA = try TurboQuantSingleRankModel(directory: Self.fixtureRoot)
-        let modelB = try TurboQuantSingleRankModel(directory: Self.fixtureRoot)
+        let modelA = try TurboQuantSingleRankModel(directory: fixtureRoot)
+        let modelB = try TurboQuantSingleRankModel(directory: fixtureRoot)
 
         let tableA = modelA.embeddingTable.asType(.float32)
         let tableB = modelB.embeddingTable.asType(.float32)

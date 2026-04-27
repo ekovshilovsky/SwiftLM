@@ -39,8 +39,8 @@
 // RoPE -> residual -> RMSNorm -> SwiGLU MLP -> residual), final
 // RMSNorm, and the lm_head matmul against the materialised embedding
 // table. No KV cache, no decoding loop, no streaming sampler — just
-// prefill logits suitable for use as a numerical oracle in Task 13's
-// equivalence test.
+// prefill logits suitable for use as a numerical oracle in the
+// distributed-model equivalence test.
 
 import Foundation
 import MLX
@@ -72,7 +72,7 @@ public final class TurboQuantSingleRankModel {
 
     public let config: DistributedQwenConfiguration
 
-    /// TurboQuant primary-stage bit width. The Phase 3 fixture ships
+    /// TurboQuant primary-stage bit width. The Qwen2.5-Coder-3B fixture ships
     /// 4+4 packing; tests can override to match alternate quantizer
     /// configurations.
     public let primaryBits: Int
@@ -87,7 +87,7 @@ public final class TurboQuantSingleRankModel {
     public let embeddingTable: MLXArray
 
     /// Final RMSNorm scale, replicated and stored in the safetensors
-    /// dtype (bfloat16 in the Phase 3 fixture).
+    /// dtype (bfloat16 in the Qwen2.5-Coder-3B fixture).
     public let finalNormWeight: MLXArray
 
     /// Per-block parameter bundles. Indexed by transformer-block

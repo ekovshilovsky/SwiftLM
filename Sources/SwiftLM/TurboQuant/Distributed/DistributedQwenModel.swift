@@ -27,8 +27,9 @@
 //
 // Top-level:
 //
-//   - `embed_tokens` — `ReplicatedEmbedding` (Phase 3 ships only the
-//     replicated strategy; vocab-parallel can swap in later). The
+//   - `embed_tokens` — `ReplicatedEmbedding`. The current implementation
+//     ships only the replicated strategy; vocab-parallel can swap in
+//     later via the `ShardedEmbeddingLayer` protocol. The
 //     row table is materialised from the TQ-packed `model.embed_tokens`
 //     payload via the shared `materialiseEmbeddingTable` helper —
 //     same dequant path the single-rank oracle uses, so size-1
@@ -236,7 +237,7 @@ public final class DistributedQwenModel: Module {
     public let embed_tokens: ReplicatedEmbedding
     public let layers: [DistributedQwenTransformerBlock]
     /// Final RMSNorm scale, replicated and stored in the safetensors
-    /// dtype (bfloat16 in the Phase 3 fixture). Applied via
+    /// dtype (bfloat16 in the Qwen2.5-Coder-3B fixture). Applied via
     /// `MLXFast.rmsNorm` so the loaded scale survives without an
     /// implicit dtype cast.
     public let finalNormWeight: MLXArray
@@ -270,7 +271,7 @@ public final class DistributedQwenModel: Module {
         self.rank = rank
         self.worldSize = worldSize
 
-        // Embedding table materialisation. The Phase 3 fixture stores
+        // Embedding table materialisation. The Qwen2.5-Coder-3B fixture stores
         // the embedding in TQ-packed form (no plain row table on
         // disk); the shared helper runs the kernel on an identity
         // input and transposes the result to recover the standard
@@ -278,7 +279,7 @@ public final class DistributedQwenModel: Module {
         // and (when tied) `lm_head` reuse the same MLXArray instance
         // so identity checks on the tied path hold.
         //
-        // Phase 3 ships only the replicated-embedding strategy. A
+        // The current implementation ships only the replicated-embedding strategy. A
         // future vocab-parallel implementation would materialise just
         // this rank's slice, but every rank still owns the full table
         // here.
@@ -304,7 +305,7 @@ public final class DistributedQwenModel: Module {
         // pointer identity (===), so allocating a fresh table for the
         // tied branch would silently regress that contract. Untied
         // models would load `lm_head.weight` from a separate TQ
-        // payload; Phase 3 fixtures all ship tied embeddings, so the
+        // payload; Qwen2.5-Coder-3B fixtures all ship tied embeddings, so the
         // untied branch is left as a precondition until needed.
         let lmHeadWeight: MLXArray
         if config.tieWordEmbeddings {
@@ -313,7 +314,7 @@ public final class DistributedQwenModel: Module {
             preconditionFailure(
                 "untied lm_head not yet supported by DistributedQwenModel; " +
                 "config.tieWordEmbeddings=false but no separate load path is " +
-                "wired in Phase 3"
+                "wired"
             )
         }
         self.lm_head = ReplicatedLMHead.make(
@@ -345,7 +346,7 @@ public final class DistributedQwenModel: Module {
             let prefix = "model.layers.\(layerIdx)"
 
             // Replicated norm scales and q/k/v biases. All bfloat16
-            // in the Phase 3 fixture; loaded as-is so the forward
+            // in the Qwen2.5-Coder-3B fixture; loaded as-is so the forward
             // path does not pay an extra dtype cast on every call.
             let inputNormWeight = try loadReplicatedTensor(
                 modelDir: modelDir,

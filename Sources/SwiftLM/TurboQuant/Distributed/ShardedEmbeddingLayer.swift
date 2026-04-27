@@ -2,7 +2,7 @@
 // tensor-parallel layout. Conforming types expose a uniform `make`
 // factory that takes the full vocabulary table plus a sharding
 // strategy, returning a layer whose internal storage matches the
-// strategy. Phase 3 ships only the `.replicated` strategy, fulfilled
+// strategy. The current implementation ships only the `.replicated` strategy, fulfilled
 // by `ReplicatedEmbedding` (token-id lookup) and `ReplicatedLMHead`
 // (logits projection); both keep the full V x H table on every rank
 // and require no collectives.
@@ -17,7 +17,7 @@ import MLXNN
 
 public enum EmbeddingShardStrategy: Sendable {
     case replicated
-    // case vocabParallel  // Phase 5 optimization
+    // case vocabParallel  // future optimisation
 }
 
 public protocol ShardedEmbeddingLayer: Module, UnaryLayer {

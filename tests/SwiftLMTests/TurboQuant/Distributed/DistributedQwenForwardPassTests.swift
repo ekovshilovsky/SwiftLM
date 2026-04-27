@@ -7,9 +7,9 @@ import MLX
 // materialisation entry point. It is unrelated to JavaScript / Python
 // `eval` and never evaluates user-supplied source.
 
-/// Phase 3 Task 13 acceptance test. Constructs both the size-1
+/// Acceptance test for the size-1 distributed forward path. Constructs both the
 /// `DistributedQwenModel` and the non-distributed
-/// `TurboQuantSingleRankModel` reference oracle from the same Phase 3
+/// `TurboQuantSingleRankModel` reference oracle from the same Qwen2.5-Coder-3B
 /// fixture, runs prefill on a deterministic five-token prompt through
 /// each, and asserts the two logits tensors agree within fp16 noise.
 ///
@@ -17,7 +17,7 @@ import MLX
 /// wrappers both fall through to a whole-weight `TurboQuantShardedLinear`
 /// kernel call (no shard, no collective), so the only sources of
 /// divergence between the distributed forward path and the oracle are
-/// (a) the placeholder weights that Task 12 left in the construction
+/// (a) any placeholder weights left over from the structural skeleton's
 /// path and (b) any choreography mismatch in the per-block forward
 /// math. This test covers both.
 ///
@@ -28,11 +28,6 @@ import MLX
 /// fixture being installed locally so CI without the fixture skips
 /// cleanly.
 final class DistributedQwenForwardPassTests: XCTestCase {
-
-    /// Phase 3 fixture root used by every model-level test.
-    private static let fixtureRoot = URL(fileURLWithPath:
-        "/Users/eugenekovshilovsky/Code/turboquant-mlx-models/converted/Qwen2.5-Coder-3B-TQ8"
-    )
 
     override class func setUp() {
         super.setUp()
@@ -65,25 +60,25 @@ final class DistributedQwenForwardPassTests: XCTestCase {
         }
     }
 
-    private func skipIfFixtureMissing() throws {
-        let fm = FileManager.default
-        let sidecar = Self.fixtureRoot.appendingPathComponent("tq_shard_metadata.json")
-        let configFile = Self.fixtureRoot.appendingPathComponent("config.json")
-        if !fm.fileExists(atPath: sidecar.path) || !fm.fileExists(atPath: configFile.path) {
+    private func resolvedFixtureRoot() throws -> URL {
+        let root = try TurboQuantTestFixtures.requireQwenCoder3B()
+        let configFile = root.appendingPathComponent("config.json")
+        if !FileManager.default.fileExists(atPath: configFile.path) {
             throw XCTSkip(
-                "Phase 3 fixture not present at \(Self.fixtureRoot.path). " +
+                "Qwen2.5-Coder-3B fixture at \(root.path) is missing config.json. " +
                 "DistributedQwenModel forward-pass equivalence requires the " +
-                "Qwen2.5-Coder-3B-TQ8 model (Task 1a install)."
+                "Qwen2.5-Coder-3B-TQ8 conversion."
             )
         }
+        return root
     }
 
     /// Size-1 distributed model produces logits within fp16 noise of
     /// the single-rank oracle on a deterministic prefill.
     func testSize1DistributedModelMatchesOracle() throws {
-        try skipIfFixtureMissing()
+        let fixtureRoot = try resolvedFixtureRoot()
 
-        let metadataURL = Self.fixtureRoot.appendingPathComponent("tq_shard_metadata.json")
+        let metadataURL = fixtureRoot.appendingPathComponent("tq_shard_metadata.json")
         let metadata = try ShardMetadata(jsonData: Data(contentsOf: metadataURL))
 
         // `DistributedGroup()` on a singleton process returns rank 0,
@@ -91,10 +86,10 @@ final class DistributedQwenForwardPassTests: XCTestCase {
         let group = DistributedGroup()
         let dist = try DistributedQwenModel(
             metadata: metadata,
-            modelDir: Self.fixtureRoot,
+            modelDir: fixtureRoot,
             group: group
         )
-        let ref = try TurboQuantSingleRankModel(directory: Self.fixtureRoot)
+        let ref = try TurboQuantSingleRankModel(directory: fixtureRoot)
 
         // Five-token deterministic prompt. Covers prefill, RoPE
         // application across positions, and gives the equivalence

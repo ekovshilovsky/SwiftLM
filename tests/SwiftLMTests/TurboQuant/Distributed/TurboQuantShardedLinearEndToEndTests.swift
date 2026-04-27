@@ -3,10 +3,9 @@ import Foundation
 import MLX
 @testable import TurboQuantKit
 
-/// Tier 4 end-to-end correctness proof for the shard-aware TurboQuant
-/// linear stack (Tasks 9a.3–9a.5). Loads a real TQ-compressed layer
-/// from the Phase 3 Qwen2.5-Coder-3B-TQ8 fixture and exercises three
-/// proofs against it:
+/// End-to-end correctness proof for the shard-aware TurboQuant linear
+/// stack. Loads a real TQ-compressed layer from the Qwen2.5-Coder-3B-TQ8
+/// fixture and exercises three proofs against it:
 ///
 ///   1. Whole-weight reference — `TurboQuantShardedLinear` with
 ///      `localInFeatures == fullInFeatures` and the full output dim
@@ -23,11 +22,11 @@ import MLX
 ///      forbids any non-trivial sharding at construction time; the
 ///      underlying kernel math is identical.
 ///
-/// Rigging synthetic TQ payloads from pure Swift is tractable only
-/// by re-implementing a slice of the offline quantizer, which is why
-/// Tasks 9a.3–9a.5 all landed behind compile gates. This file closes
-/// the four-tier proof hierarchy by loading weights that the offline
-/// quantizer actually produced.
+/// Rigging synthetic TQ payloads from pure Swift is tractable only by
+/// re-implementing a slice of the offline quantizer, which is why the
+/// per-layer compile-gate suites stop short of numerical proofs. This
+/// file closes the gap by loading weights that the offline quantizer
+/// actually produced.
 ///
 /// The fixture's safetensors files hold:
 ///   - `<layer>.packed_primary`  U8 [out, in*bits/8]  — 4-bit packed
@@ -41,7 +40,7 @@ import MLX
 /// this file parses the safetensors header itself to locate the
 /// companion tensors. When the fixture is absent we skip cleanly.
 ///
-/// ## Task 9a.6 Finding: cross-runtime eval boundary
+/// ## Cross-runtime eval boundary
 ///
 /// libturboquant_mlx.dylib links Homebrew's libmlx, while the Swift
 /// bridge links mlx-swift's Cmlx — two distinct MLX runtimes co-resident
@@ -61,11 +60,6 @@ import MLX
 final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
 
     // MARK: - Fixture configuration
-
-    /// Phase 3 fixture root. Task 1a installs the sidecar here.
-    private static let fixtureRoot = URL(fileURLWithPath:
-        "/Users/eugenekovshilovsky/Code/turboquant-mlx-models/converted/Qwen2.5-Coder-3B-TQ8"
-    )
 
     private static let primaryBits = 4
     private static let residualBits = 4
@@ -127,23 +121,15 @@ final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
         )
     }
 
-    private func skipIfFixtureMissing() throws {
-        let fm = FileManager.default
-        let sidecar = Self.fixtureRoot.appendingPathComponent("tq_shard_metadata.json")
-        if !fm.fileExists(atPath: sidecar.path) {
-            throw XCTSkip(
-                "Phase 3 fixture not present at \(Self.fixtureRoot.path). " +
-                "Tier 4 end-to-end proof requires the " +
-                "Qwen2.5-Coder-3B-TQ8 model (Task 1a install)."
-            )
-        }
+    private func resolvedFixtureRoot() throws -> URL {
+        try TurboQuantTestFixtures.requireQwenCoder3B()
     }
 
     // MARK: - Shared comparison helpers
 
     /// Relative Frobenius error between two fp16/fp32 MLXArrays of the
-    /// same shape: ||a - b||_F / max(||b||_F, eps). Matching tolerance
-    /// conventions used in Task 9a.1's numerical tier tables.
+    /// same shape: ||a - b||_F / max(||b||_F, eps). Matches the
+    /// tolerance convention used by the upstream TQ numerical proofs.
     private func relFrobeniusError(_ a: MLXArray, _ b: MLXArray) -> Float {
         let diff = a.asType(.float32) - b.asType(.float32)
         let num = MLX.sqrt(MLX.sum(diff * diff)).item(Float.self)
@@ -159,7 +145,7 @@ final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
         MLX.eval(arrays)
     }
 
-    // MARK: - Test 1: whole-weight reference (Tier 4 bridge proof)
+    // MARK: - Test 1: whole-weight reference (bridge proof)
 
     /// The bridge itself is tested here: `TurboQuantShardedLinear` with
     /// rank_out == full_out and local_in == full_in, i.e., no actual
@@ -167,10 +153,10 @@ final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
     /// and finite values. This confirms the real TQ kernel accepts the
     /// fixture's compressed payload before any shard slicing enters.
     func testWholeWeightReferenceForward() throws {
-        try skipIfFixtureMissing()
+        let fixtureRoot = try resolvedFixtureRoot()
 
         let layer = try Self.loadTQLayer(
-            rootURL: Self.fixtureRoot,
+            rootURL: fixtureRoot,
             layerName: "model.layers.0.self_attn.q_proj"
         )
 
@@ -203,9 +189,9 @@ final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
         // documents that `tq_linear_forward` casts the input to fp16
         // internally, but the cast path only produces the expected
         // numerical output when the input is ALREADY fp16 at the
-        // Swift boundary; passing fp32 yields an all-zero output as
-        // of Task 9a.6 — a latent defect captured below in a separate
-        // XCTSkipped assertion for a future investigation.
+        // Swift boundary; passing fp32 yields an all-zero output —
+        // a latent defect captured below in a separate XCTSkipped
+        // assertion for a future investigation.
         MLXRandom.seed(12345)
         let batch = 2
         let x = MLXRandom.normal([batch, layer.inFeatures], dtype: .float16)
@@ -230,16 +216,16 @@ final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
 
     // MARK: - Test 2: column-parallel two-rank concat proof
 
-    /// Column-parallel Tier 4 proof: slice the output dim in half,
+    /// Column-parallel end-to-end proof: slice the output dim in half,
     /// build two `TurboQuantAllToShardedLinear` instances over the
     /// resulting row slices of `packed_primary`, `packed_residual`,
     /// and `norms`; concat their partials and compare to the whole-
     /// weight reference from Test 1.
     func testColumnParallelTwoRankConcatMatchesReference() throws {
-        try skipIfFixtureMissing()
+        let fixtureRoot = try resolvedFixtureRoot()
 
         let layer = try Self.loadTQLayer(
-            rootURL: Self.fixtureRoot,
+            rootURL: fixtureRoot,
             layerName: "model.layers.0.self_attn.q_proj"
         )
         XCTAssertEqual(layer.outFeatures % 2, 0, "outFeatures must be even for 2-way split")
@@ -321,21 +307,22 @@ final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
 
         // Zero-output guard — stops a 0-vs-0 comparison from passing
         // a relative-error tolerance trivially. If this ever fires,
-        // the Task 9a.3 bridge bug is still live.
+        // the cross-runtime eval bug described at the file head is
+        // still live.
         let refMax = MLX.max(MLX.abs(yRef.asType(.float32))).item(Float.self)
         let recMax = MLX.max(MLX.abs(reconstructed.asType(.float32))).item(Float.self)
         XCTAssertGreaterThan(refMax, 1e-3,
                              "oracle output is trivially zero — see file-level comment " +
-                             "on the Task 9a.3 bridge pointer-type bug; refMax=\(refMax)")
+                             "on the cross-runtime eval boundary; refMax=\(refMax)")
         XCTAssertGreaterThan(recMax, 1e-3,
                              "reconstructed output is trivially zero — see file-level " +
-                             "comment on the Task 9a.3 bridge pointer-type bug; " +
+                             "comment on the cross-runtime eval boundary; " +
                              "recMax=\(recMax)")
 
         let err = relFrobeniusError(reconstructed, yRef)
         // Column-parallel concat should be numerically exact aside
-        // from fp16 accumulation noise. Task 9a.1's numerical tier
-        // observed rel_frob ≈ 0 for this configuration.
+        // from fp16 accumulation noise; the upstream TQ numerical
+        // proofs observe rel_frob ≈ 0 for this configuration.
         XCTAssertLessThan(err, 1e-2,
                           "column-parallel 2-rank concat diverged from whole-weight " +
                           "reference: rel_frob=\(err)")
@@ -343,7 +330,7 @@ final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
 
     // MARK: - Test 3: row-parallel two-rank allSum proof
 
-    /// Row-parallel Tier 4 proof: slice the input dim in half, build
+    /// Row-parallel end-to-end proof: slice the input dim in half, build
     /// two rank-local `TurboQuantShardedLinear` handles over the
     /// resulting input-axis slices of `packed_primary` /
     /// `packed_residual`, sum their partials, and compare to a whole-
@@ -365,10 +352,10 @@ final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
     /// `worldSize * blockSize`. For o_proj at 2048 and blockSize=512,
     /// `2048 % (2 * 512) == 0` is satisfied.
     func testRowParallelTwoRankAllSumMatchesReference() throws {
-        try skipIfFixtureMissing()
+        let fixtureRoot = try resolvedFixtureRoot()
 
         let layer = try Self.loadTQLayer(
-            rootURL: Self.fixtureRoot,
+            rootURL: fixtureRoot,
             layerName: "model.layers.0.self_attn.o_proj"
         )
         let worldSize = 2
@@ -454,10 +441,10 @@ final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
         let reconstructed = partial0 + partial1
         XCTAssertEqual(reconstructed.shape, yRef.shape)
 
-        // Zero-output guard — see file-level comment on the Task 9a.3
-        // bridge bug. If the whole-weight forward returns zero, the
-        // sharded comparison degenerates to 0 == 0 and trivially
-        // passes any relative tolerance.
+        // Zero-output guard — see file-level comment on the cross-
+        // runtime eval boundary. If the whole-weight forward returns
+        // zero, the sharded comparison degenerates to 0 == 0 and
+        // trivially passes any relative tolerance.
         let refMax = MLX.max(MLX.abs(yRef.asType(.float32))).item(Float.self)
         let recMax = MLX.max(MLX.abs(reconstructed.asType(.float32))).item(Float.self)
         XCTAssertGreaterThan(refMax, 1e-3,
@@ -466,12 +453,12 @@ final class TurboQuantShardedLinearEndToEndTests: XCTestCase {
                              "reconstructed output is trivially zero; recMax=\(recMax)")
 
         let err = relFrobeniusError(reconstructed, yRef)
-        // Row-parallel tolerance: Task 9a.1's numerical tier found
-        // that split-rotation compositions under block-aligned shards
-        // match whole-weight to within fp16-accumulation noise. A
-        // slightly looser bound than the column-parallel case is
-        // appropriate because the split occurs across the rotated
-        // input axis where per-block norms compound.
+        // Row-parallel tolerance: split-rotation compositions under
+        // block-aligned shards match whole-weight to within fp16-
+        // accumulation noise. A slightly looser bound than the
+        // column-parallel case is appropriate because the split
+        // occurs across the rotated input axis where per-block
+        // norms compound.
         XCTAssertLessThan(err, 5e-2,
                           "row-parallel 2-rank allSum diverged from whole-weight " +
                           "reference: rel_frob=\(err)")

@@ -3,19 +3,19 @@ import Foundation
 import MLX
 @testable import TurboQuantKit
 
-/// Tier 2 proof for Task 9a.3: the Swift wrapper around the new
-/// shard-aware C API compiles against the TurboQuantC module, imports
-/// the new `tq_linear_*` symbols, and exposes the expected constructor
-/// and forward surface.
+/// Compile-gate proof for the Swift wrapper around the shard-aware C
+/// API: the wrapper builds against the TurboQuantC module, imports the
+/// `tq_linear_*` symbols, and exposes the expected constructor and
+/// forward surface.
 ///
 /// Synthetic quantized-weight rigging (generating valid 4-bit packed
 /// indices, Lloyd-Max codebooks, and matching per-row norms from pure
-/// Swift) would reimplement a slice of the offline quantizer here. That
-/// work lives in Task 9a.4 (two-rank in-process concat) and Task 9a.6
-/// (end-to-end against the Phase 3 fixture), where a real fixture layer
-/// is already on disk. The compile gate alone is the correct scope for
-/// 9a.3: it proves the Swift ↔ C boundary is wired up before 9a.4 needs
-/// to stand on top of it.
+/// Swift) would reimplement a slice of the offline quantizer here.
+/// Numerical correctness is covered by the column- and row-parallel
+/// wrapper tests and the end-to-end suite that runs against a real
+/// converted fixture. The compile gate alone is the correct scope for
+/// this file: it proves the Swift ↔ C boundary is wired up before any
+/// downstream wrapper test relies on it.
 final class TurboQuantShardedLinearTests: XCTestCase {
 
     /// Same metallib side-load workaround as
@@ -81,9 +81,10 @@ final class TurboQuantShardedLinearTests: XCTestCase {
 
         throw XCTSkip(
             "Synthetic TQ payload generation is intentionally deferred " +
-            "to Task 9a.4 (two-rank concat) and 9a.6 (Phase 3 fixture). " +
-            "This test is the Swift↔C compile gate; reaching the skip " +
-            "proves every new tq_linear_* symbol resolves at build time."
+            "to the wrapper-level numerical tests and the end-to-end " +
+            "suite that runs on a real converted fixture. This test is " +
+            "the Swift↔C compile gate; reaching the skip proves every " +
+            "tq_linear_* symbol resolves at build time."
         )
     }
 }

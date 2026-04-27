@@ -276,7 +276,7 @@ final class ClusterManagerTests: XCTestCase {
     /// instance. The shutdown also cancels the coordinator's accept
     /// loop and stops the BonjourService, so a second call to
     /// `stop()` is a no-op rather than an error — idempotency matters
-    /// for the CLI signal-handler path in Task 12c.
+    /// for the CLI signal-handler path.
     func testStopIsTerminalAndIdempotent() async throws {
         let fx = makeFixture()
 

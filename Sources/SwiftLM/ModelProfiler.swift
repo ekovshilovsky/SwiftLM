@@ -94,7 +94,7 @@ enum PartitionStrategy: String, Sendable {
     case fullGPU = "full_gpu"
     /// Model exceeds RAM but macOS swap can handle it with degraded performance
     case swapAssisted = "swap_assisted"
-    /// Model needs layer-level CPU/GPU split (future Phase 2)
+    /// Model needs layer-level CPU/GPU split (not yet supported)
     case layerPartitioned = "layer_partitioned"
     /// Model is far too large for this machine
     case tooLarge = "too_large"
@@ -382,7 +382,7 @@ enum ModelProfiler {
             }
         }
 
-        // Compute GPU layers (for Phase 2 readiness)
+        // Compute the GPU-layer count for the layer-partitioned profile
         let perLayerGB = weightGB / Double(model.numLayers)
         let kvPerLayerGB = kvGB / Double(model.numLayers)
         let perLayerTotal = (perLayerGB + kvPerLayerGB) * overheadFactor

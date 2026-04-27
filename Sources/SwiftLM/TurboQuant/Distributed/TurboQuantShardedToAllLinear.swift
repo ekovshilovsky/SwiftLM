@@ -8,23 +8,21 @@
 // accumulates partials across ranks to yield the replicated full
 // output.
 //
-// Task 9a.5 wires this layer to the real TQ kernel via the
-// `TurboQuantShardedLinear` Swift bridge (Task 9a.3), replacing the
-// Task 8 MLX.matmul stub that operated on a pre-dequantized fp16
-// weight. Row-parallel semantics: the input dim is sliced across
-// ranks (`localInFeatures == fullInFeatures / worldSize`) while the
-// output dim is produced in full on every rank and summed by the
-// collective. The C kernel still needs `fullInFeatures` explicitly to
-// derive the correct combined_scale (per Task 9a.1's finding: WHT
-// factorization requires this so per-shard rescale does not drift).
+// The layer wraps a `TurboQuantShardedLinear` Swift bridge, which
+// dispatches into the shard-aware TQ kernel on the rank-local payload.
+// Row-parallel semantics: the input dim is sliced across ranks
+// (`localInFeatures == fullInFeatures / worldSize`) while the output
+// dim is produced in full on every rank and summed by the collective.
+// The C kernel still needs `fullInFeatures` explicitly to derive the
+// correct `combined_scale`: the WHT factorisation requires the full
+// pre-shard input dimension so per-shard rescale does not drift.
 //
 // Row-parallel sharding is only valid when the full input dim aligns
 // on a group-sized block boundary — `fullInFeatures % (worldSize *
-// blockSize) == 0`. Task 9a.1 proved this is the only configuration
-// where rotation and per-block norm semantics compose cleanly across
-// shards; misaligned splits produce silently wrong combined_scale
-// values. The precondition in `init` enforces this invariant at
-// construction time.
+// blockSize) == 0`. This is the only configuration where rotation and
+// per-block norm semantics compose cleanly across shards; misaligned
+// splits produce silently wrong combined_scale values. The
+// precondition in `init` enforces this invariant at construction time.
 //
 // At a size-1 group the `allSum` is a no-op and the single-rank
 // partial IS the full answer.
@@ -51,9 +49,9 @@ public final class TurboQuantShardedToAllLinear: Module, TurboQuantShardedLayer 
     /// Build a row-parallel TQ linear layer from the loader's
     /// rank-local tensor payloads. The packed-index tensors must
     /// already be sliced along the input-dim axis for this rank;
-    /// norms and codebooks are broadcast unchanged (per Task 9a.1:
-    /// rotation is block-local and per-row state is identical across
-    /// ranks — only the input-block bytes differ).
+    /// norms and codebooks are broadcast unchanged (rotation is
+    /// block-local and per-row state is identical across ranks — only
+    /// the input-block bytes differ).
     ///
     /// Shape contract (per `turboquant_c.h`, row-parallel case):
     /// - `packedPrimary` / `packedResidual`: uint8 packed along a
@@ -66,8 +64,8 @@ public final class TurboQuantShardedToAllLinear: Module, TurboQuantShardedLayer 
     ///
     /// Preconditions:
     /// - `fullInFeatures` must be divisible by `worldSize * blockSize`
-    ///   so rotation / per-block norm semantics factorize cleanly
-    ///   across shards (Task 9a.1 finding).
+    ///   so rotation / per-block norm semantics factorise cleanly
+    ///   across shards.
     /// - `localInFeatures * worldSize == fullInFeatures`.
     public init(
         fullInFeatures: Int,
@@ -89,7 +87,7 @@ public final class TurboQuantShardedToAllLinear: Module, TurboQuantShardedLayer 
         precondition(
             fullInFeatures % (worldSize * blockSize) == 0,
             "row-parallel TQ sharding requires fullInFeatures divisible " +
-            "by worldSize * blockSize (Task 9a.1 finding); got " +
+            "by worldSize * blockSize; got " +
             "fullInFeatures=\(fullInFeatures), worldSize=\(worldSize), " +
             "blockSize=\(blockSize)"
         )

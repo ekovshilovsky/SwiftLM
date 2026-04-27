@@ -19,7 +19,7 @@
 // the type an actor keeps all of that serialized under Swift's own
 // concurrency model rather than by ad-hoc locking.
 //
-// Scope for v1 (Phase 4) is a single cluster formation per manager:
+// Scope for v1 is a single cluster formation per manager:
 // one create or one join, then `listPeers()` passes through the
 // BonjourService's stream. Rotation, heartbeats, and persistent-state
 // recovery on startup are explicitly out of scope.
@@ -113,7 +113,7 @@ public actor ClusterManager {
             throw ClusterManagerError.managerStopped
         }
         // `clusterName` is accepted in the public signature to keep
-        // the CLI layer (Task 12c) free to pass a user-visible label
+        // the CLI layer free to pass a user-visible label
         // through without a signature change later. It is deliberately
         // not advertised on the wire — the Bonjour TXT `cluster` field
         // holds the passphrase-derived discovery hash, not a name.
@@ -187,7 +187,7 @@ public actor ClusterManager {
                         )
                     } catch {
                         // Intentionally swallowed — see comment above.
-                        // A structured logger belongs here in Phase 5.
+                        // A structured logger belongs here later.
                     }
                     connection.cancel()
                 }

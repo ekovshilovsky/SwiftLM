@@ -80,13 +80,11 @@ final class ShardMetadataTests: XCTestCase {
         XCTAssertThrowsError(try ShardMetadata(jsonData: Data(json.utf8)))
     }
 
-    /// Additional integration-ish test: load the real Phase 3 fixture if present.
-    /// This exercises the decoder against actual convert-tool output.
-    func testLoadsRealPhase3FixtureIfPresent() throws {
-        let fixtureURL = URL(fileURLWithPath: "/Users/eugenekovshilovsky/Code/turboquant-mlx-models/converted/Qwen2.5-Coder-3B-TQ8/tq_shard_metadata.json")
-        guard FileManager.default.fileExists(atPath: fixtureURL.path) else {
-            throw XCTSkip("Phase 3 fixture not present: \(fixtureURL.path)")
-        }
+    /// Additional integration-ish test: load the real Qwen2.5-Coder-3B fixture
+    /// if present. This exercises the decoder against actual convert-tool output.
+    func testLoadsRealConvertedFixtureIfPresent() throws {
+        let fixtureRoot = try TurboQuantTestFixtures.requireQwenCoder3B()
+        let fixtureURL = fixtureRoot.appendingPathComponent("tq_shard_metadata.json")
         let data = try Data(contentsOf: fixtureURL)
         let md = try ShardMetadata(jsonData: data)
         XCTAssertEqual(md.formatVersion, 1)

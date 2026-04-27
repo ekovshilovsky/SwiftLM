@@ -4,24 +4,18 @@ import MLX
 import MLXNN
 @testable import TurboQuantKit
 
-/// Type-correctness assertions for the Task 12 structural skeleton.
-/// Constructs a `DistributedQwenModel` from the Phase 3 Qwen2.5-Coder-3B-TQ8
+/// Type-correctness assertions for the structural skeleton.
+/// Constructs a `DistributedQwenModel` from the Qwen2.5-Coder-3B-TQ8
 /// fixture and verifies that every per-layer slot ends up wrapping the
-/// concrete sharded type expected by the §4.1 layout (split-QKV /
-/// split-MLP variant). The forward pass is not exercised here; that
-/// is Task 13's territory.
+/// concrete sharded type expected by the split-QKV / split-MLP layout.
+/// The forward pass is not exercised here; that is the forward-pass
+/// test's territory.
 ///
-/// The Phase 3 fixture is large (36 layers × 7 TQ tensors per layer),
+/// The Qwen2.5-Coder-3B fixture is large (36 layers × 7 TQ tensors per layer),
 /// so this test is gated on the fixture being installed locally.
 /// When the sidecar is absent the test skips cleanly the same way
 /// the end-to-end correctness tests do.
 final class DistributedQwenModelTests: XCTestCase {
-
-    /// Fixture root used by every Tier-4 / structural test on this
-    /// model.
-    private static let fixtureRoot = URL(fileURLWithPath:
-        "/Users/eugenekovshilovsky/Code/turboquant-mlx-models/converted/Qwen2.5-Coder-3B-TQ8"
-    )
 
     override class func setUp() {
         super.setUp()
@@ -54,26 +48,26 @@ final class DistributedQwenModelTests: XCTestCase {
         }
     }
 
-    private func skipIfFixtureMissing() throws {
-        let fm = FileManager.default
-        let sidecar = Self.fixtureRoot.appendingPathComponent("tq_shard_metadata.json")
-        let configFile = Self.fixtureRoot.appendingPathComponent("config.json")
-        if !fm.fileExists(atPath: sidecar.path) || !fm.fileExists(atPath: configFile.path) {
+    private func resolvedFixtureRoot() throws -> URL {
+        let root = try TurboQuantTestFixtures.requireQwenCoder3B()
+        let configFile = root.appendingPathComponent("config.json")
+        if !FileManager.default.fileExists(atPath: configFile.path) {
             throw XCTSkip(
-                "Phase 3 fixture not present at \(Self.fixtureRoot.path). " +
-                "DistributedQwenModel structural tests require the " +
-                "Qwen2.5-Coder-3B-TQ8 model (Task 1a install)."
+                "Qwen2.5-Coder-3B fixture at \(root.path) is missing config.json. " +
+                "DistributedQwenModel structural tests require a complete " +
+                "Qwen2.5-Coder-3B-TQ8 layout."
             )
         }
+        return root
     }
 
     /// Configuration parsing is itself part of the public surface; a
     /// dedicated assertion here makes the failure mode obvious if the
     /// upstream `config.json` ever drops a required field.
     func testConfigurationDecodesAllRequiredFields() throws {
-        try skipIfFixtureMissing()
+        let fixtureRoot = try resolvedFixtureRoot()
 
-        let configURL = Self.fixtureRoot.appendingPathComponent("config.json")
+        let configURL = fixtureRoot.appendingPathComponent("config.json")
         let config = try DistributedQwenConfiguration.load(from: configURL)
 
         // Verified against the upstream Qwen2.5-Coder-3B HuggingFace
@@ -89,22 +83,21 @@ final class DistributedQwenModelTests: XCTestCase {
                       "tied embeddings flag drives the lm_head weight reuse path")
     }
 
-    /// The structural skeleton: every per-layer slot must end up
-    /// wrapping the concrete sharded type per the layout the model
-    /// targets at Phase 3 (split-QKV column-parallel into row-parallel
-    /// `o_proj`; split-MLP column-parallel into row-parallel
-    /// `down_proj`).
+    /// Every per-layer slot must end up wrapping the concrete sharded
+    /// type per the layout the model targets (split-QKV column-parallel
+    /// into row-parallel `o_proj`; split-MLP column-parallel into
+    /// row-parallel `down_proj`).
     func testModelConstructionWiresExpectedLayerTypes() throws {
-        try skipIfFixtureMissing()
+        let fixtureRoot = try resolvedFixtureRoot()
 
-        let sidecarURL = Self.fixtureRoot.appendingPathComponent("tq_shard_metadata.json")
+        let sidecarURL = fixtureRoot.appendingPathComponent("tq_shard_metadata.json")
         let sidecarData = try Data(contentsOf: sidecarURL)
         let metadata = try ShardMetadata(jsonData: sidecarData)
 
         let group = DistributedGroup()
         let model = try DistributedQwenModel(
             metadata: metadata,
-            modelDir: Self.fixtureRoot,
+            modelDir: fixtureRoot,
             group: group
         )
 
