@@ -152,14 +152,40 @@ final class DistributedQwenModelTests: XCTestCase {
         XCTAssertTrue(type(of: block0.mlp.down_proj) == TurboQuantShardedToAllLinear.self,
                       "mlp.down_proj must be row-parallel (TurboQuantShardedToAllLinear)")
 
-        // Pre-attention and pre-MLP norms are replicated RMSNorms.
-        XCTAssertTrue(type(of: block0.input_layernorm) == RMSNorm.self,
-                      "input_layernorm must be a replicated RMSNorm")
-        XCTAssertTrue(type(of: block0.post_attention_layernorm) == RMSNorm.self,
-                      "post_attention_layernorm must be a replicated RMSNorm")
+        // Pre-attention, pre-MLP, and final RMSNorm scales are stored
+        // as raw bfloat16 weight tensors so the loaded scale survives
+        // without an implicit dtype cast at construction. The forward
+        // path applies them via `MLXFast.rmsNorm`.
+        XCTAssertEqual(block0.inputLayernormWeight.shape, [model.config.hiddenSize],
+                       "input_layernorm weight must be [hiddenSize]")
+        XCTAssertEqual(block0.inputLayernormWeight.dtype, .bfloat16,
+                       "input_layernorm weight must be bfloat16 (fixture dtype)")
+        XCTAssertEqual(block0.postAttentionLayernormWeight.shape, [model.config.hiddenSize],
+                       "post_attention_layernorm weight must be [hiddenSize]")
+        XCTAssertEqual(block0.postAttentionLayernormWeight.dtype, .bfloat16,
+                       "post_attention_layernorm weight must be bfloat16 (fixture dtype)")
+        XCTAssertEqual(model.finalNormWeight.shape, [model.config.hiddenSize],
+                       "model.finalNormWeight must be [hiddenSize]")
+        XCTAssertEqual(model.finalNormWeight.dtype, .bfloat16,
+                       "model.finalNormWeight must be bfloat16 (fixture dtype)")
 
-        // Final norm.
-        XCTAssertTrue(type(of: model.norm) == RMSNorm.self,
-                      "model.norm must be a replicated RMSNorm")
+        // q/k/v biases are replicated bfloat16 vectors sized to each
+        // projection's full output dim. The fixture has q_proj
+        // outputs of size 2048 and k/v outputs of size 256 (GQA).
+        XCTAssertEqual(block0.self_attn.qBias.shape, [model.config.hiddenSize],
+                       "q_proj bias must be [hiddenSize]")
+        XCTAssertEqual(block0.self_attn.qBias.dtype, .bfloat16)
+        XCTAssertEqual(
+            block0.self_attn.kBias.shape,
+            [model.config.numKeyValueHeads * (model.config.hiddenSize / model.config.numAttentionHeads)],
+            "k_proj bias must be [numKVHeads * head_dim]"
+        )
+        XCTAssertEqual(block0.self_attn.kBias.dtype, .bfloat16)
+        XCTAssertEqual(
+            block0.self_attn.vBias.shape,
+            [model.config.numKeyValueHeads * (model.config.hiddenSize / model.config.numAttentionHeads)],
+            "v_proj bias must be [numKVHeads * head_dim]"
+        )
+        XCTAssertEqual(block0.self_attn.vBias.dtype, .bfloat16)
     }
 }

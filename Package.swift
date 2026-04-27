@@ -194,6 +194,7 @@ let package = Package(
                 "TurboQuant/Distributed/TurboQuantShardedToAllLinearTests.swift",
                 "TurboQuant/Distributed/ReplicatedEmbeddingTests.swift",
                 "TurboQuant/Distributed/DistributedQwenModelTests.swift",
+                "TurboQuant/Distributed/DistributedQwenForwardPassTests.swift",
                 "TurboQuant/TurboQuantSingleRankModelTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
                 "TurboQuant/Integration/UpstreamRegressionTests.swift",

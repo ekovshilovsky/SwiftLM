@@ -4,16 +4,22 @@
 //
 // Layer-to-sharding mapping for each transformer block:
 //
-//   - `input_layernorm` (RMSNorm, pre-attention) — replicated.
+//   - `input_layernorm` (RMSNorm, pre-attention) — replicated. Stored
+//     as a raw bfloat16 weight tensor and applied via
+//     `MLXFast.rmsNorm` so the loaded scale survives without the dtype
+//     conversion that `MLXNN.RMSNorm` would force at construction.
 //   - `self_attn.q_proj`, `self_attn.k_proj`, `self_attn.v_proj` —
 //     column-parallel, each a separate `TurboQuantAllToShardedLinear`.
 //     The fixture ships split QKV (no fused tensor); each rank owns
-//     its slice of the output rows of the three projections.
+//     its slice of the output rows of the three projections. Each
+//     projection has a replicated bfloat16 bias tensor added to the
+//     output before the per-head reshape.
 //   - `self_attn.o_proj` — row-parallel
 //     (`TurboQuantShardedToAllLinear`). Consumes the rank-local
 //     attention output and `allSum`s the partial back to the
 //     replicated hidden state.
-//   - `post_attention_layernorm` (RMSNorm, pre-MLP) — replicated.
+//   - `post_attention_layernorm` (RMSNorm, pre-MLP) — replicated, raw
+//     bfloat16 weight as above.
 //   - `mlp.gate_proj`, `mlp.up_proj` — column-parallel, each a
 //     separate `TurboQuantAllToShardedLinear`. Split MLP layout, no
 //     fused gate-up tensor in the fixture.
@@ -22,27 +28,26 @@
 // Top-level:
 //
 //   - `embed_tokens` — `ReplicatedEmbedding` (Phase 3 ships only the
-//     replicated strategy; vocab-parallel can swap in later).
+//     replicated strategy; vocab-parallel can swap in later). The
+//     row table is materialised from the TQ-packed `model.embed_tokens`
+//     payload via the shared `materialiseEmbeddingTable` helper —
+//     same dequant path the single-rank oracle uses, so size-1
+//     equivalence is preserved at the construction boundary.
 //   - `layers` — array of `DistributedQwenTransformerBlock` sized to
 //     `config.numHiddenLayers`.
-//   - final `RMSNorm` over the hidden dim.
+//   - final RMSNorm scale over the hidden dim, stored as a raw
+//     bfloat16 weight and applied via `MLXFast.rmsNorm`.
 //   - `lm_head` — `ReplicatedLMHead`. When `tieWordEmbeddings` is
-//     true the lm_head shares its weight tensor with `embed_tokens`.
+//     true the lm_head shares the same `MLXArray` instance as
+//     `embed_tokens`.
 //
-// Task 12 scope. This file lands the structural skeleton: the types,
-// the per-layer wiring, and the construction-time loader that
-// materialises every sharded layer from disk. The forward pass
-// (`callAsFunction`) is intentionally absent — Task 13 wires it.
-//
-// Embedding-table loading. The Phase 3 fixture stores the embedding
-// table in TurboQuant-packed form (no raw `embed_tokens.weight` row
-// table on disk). Dequantising the V x H table to the rank-local
-// embedding requires the TQ kernel which runs only at inference
-// time, not during model construction. For Task 12 the embedding
-// layer is constructed with a zero-filled placeholder matching the
-// fixture's dtype and shape so the type-correctness assertions can
-// run; Task 13 will replace the placeholder with the real
-// dequantised table.
+// Forward pass. Implements a standard Qwen2 prefill: token embedding
+// lookup, N transformer blocks (RMSNorm -> GQA self-attention with
+// RoPE -> residual -> RMSNorm -> SwiGLU MLP -> residual), final
+// RMSNorm, and the lm_head matmul against the materialised embedding
+// table. No KV cache, no decoding loop, no streaming sampler — Task
+// 14 adds the streaming surface; this file ships the prefill path
+// that the size-1 equivalence test compares against the oracle.
 
 import Foundation
 import MLX
@@ -127,30 +132,49 @@ public struct DistributedQwenConfiguration: Codable, Sendable {
 // MARK: - Per-block submodules
 
 /// Sharded self-attention sub-module. Holds the four projection
-/// layers that the transformer block dispatches into. The attention
-/// math itself (RoPE, mask, scaled dot-product) is wired in Task 13.
+/// layers that the transformer block dispatches into, plus the
+/// replicated bfloat16 q/k/v bias tensors added to the projection
+/// outputs prior to the per-head reshape. `o_proj` has no bias in the
+/// Qwen2/2.5 architecture.
 public final class DistributedQwenAttention: Module {
     public let q_proj: TurboQuantAllToShardedLinear
     public let k_proj: TurboQuantAllToShardedLinear
     public let v_proj: TurboQuantAllToShardedLinear
     public let o_proj: TurboQuantShardedToAllLinear
 
+    /// Replicated bfloat16 bias for the column-parallel q/k/v
+    /// projections. Applied to the kernel's fp16 output via a
+    /// runtime-side dtype cast that matches the activation dtype. The
+    /// bias must be added before the projection result is reshaped
+    /// into per-head slices — adding after the reshape would
+    /// redistribute bias entries across heads and break equivalence
+    /// with the standard Qwen2 implementation.
+    public let qBias: MLXArray
+    public let kBias: MLXArray
+    public let vBias: MLXArray
+
     public init(
         q_proj: TurboQuantAllToShardedLinear,
         k_proj: TurboQuantAllToShardedLinear,
         v_proj: TurboQuantAllToShardedLinear,
-        o_proj: TurboQuantShardedToAllLinear
+        o_proj: TurboQuantShardedToAllLinear,
+        qBias: MLXArray,
+        kBias: MLXArray,
+        vBias: MLXArray
     ) {
         self.q_proj = q_proj
         self.k_proj = k_proj
         self.v_proj = v_proj
         self.o_proj = o_proj
+        self.qBias = qBias
+        self.kBias = kBias
+        self.vBias = vBias
         super.init()
     }
 }
 
-/// Sharded MLP sub-module (split gate / up / down). The SiLU gating
-/// math is wired in Task 13.
+/// Sharded MLP sub-module (split gate / up / down). The fixture has
+/// no biases on any of the three MLP projections.
 public final class DistributedQwenMLP: Module {
     public let gate_proj: TurboQuantAllToShardedLinear
     public let up_proj: TurboQuantAllToShardedLinear
@@ -170,23 +194,27 @@ public final class DistributedQwenMLP: Module {
 
 /// One transformer block: pre-attention RMSNorm, sharded self-
 /// attention, residual, pre-MLP RMSNorm, sharded MLP, residual.
-/// Task 12 ships only the wiring; the forward pass is added in
-/// Task 13.
+///
+/// Both norms are stored as raw bfloat16 weight tensors rather than
+/// `MLXNN.RMSNorm` instances so the bfloat16 scale loaded from the
+/// passthrough safetensors round-trips without the implicit dtype
+/// promotion that `RMSNorm`'s `let weight` would force. The forward
+/// path applies them via `MLXFast.rmsNorm(_:weight:eps:)`.
 public final class DistributedQwenTransformerBlock: Module {
-    public let input_layernorm: RMSNorm
+    public let inputLayernormWeight: MLXArray
     public let self_attn: DistributedQwenAttention
-    public let post_attention_layernorm: RMSNorm
+    public let postAttentionLayernormWeight: MLXArray
     public let mlp: DistributedQwenMLP
 
     public init(
-        input_layernorm: RMSNorm,
+        inputLayernormWeight: MLXArray,
         self_attn: DistributedQwenAttention,
-        post_attention_layernorm: RMSNorm,
+        postAttentionLayernormWeight: MLXArray,
         mlp: DistributedQwenMLP
     ) {
-        self.input_layernorm = input_layernorm
+        self.inputLayernormWeight = inputLayernormWeight
         self.self_attn = self_attn
-        self.post_attention_layernorm = post_attention_layernorm
+        self.postAttentionLayernormWeight = postAttentionLayernormWeight
         self.mlp = mlp
         super.init()
     }
@@ -196,7 +224,9 @@ public final class DistributedQwenTransformerBlock: Module {
 
 /// Tensor-parallel Qwen decoder model. Construction loads every
 /// sharded layer from the model directory and assembles the block
-/// stack. Task 12 stops here; Task 13 adds `callAsFunction`.
+/// stack. The forward pass mirrors the single-rank reference oracle's
+/// choreography exactly so size-1 distributed runs match the oracle
+/// within fp16 noise.
 public final class DistributedQwenModel: Module {
     public let config: DistributedQwenConfiguration
     public let group: DistributedGroup
@@ -205,7 +235,11 @@ public final class DistributedQwenModel: Module {
 
     public let embed_tokens: ReplicatedEmbedding
     public let layers: [DistributedQwenTransformerBlock]
-    public let norm: RMSNorm
+    /// Final RMSNorm scale, replicated and stored in the safetensors
+    /// dtype (bfloat16 in the Phase 3 fixture). Applied via
+    /// `MLXFast.rmsNorm` so the loaded scale survives without an
+    /// implicit dtype cast.
+    public let finalNormWeight: MLXArray
     public let lm_head: ReplicatedLMHead
 
     /// Build a rank-local distributed Qwen model.
@@ -236,36 +270,51 @@ public final class DistributedQwenModel: Module {
         self.rank = rank
         self.worldSize = worldSize
 
-        // Embedding + lm_head.
+        // Embedding table materialisation. The Phase 3 fixture stores
+        // the embedding in TQ-packed form (no plain row table on
+        // disk); the shared helper runs the kernel on an identity
+        // input and transposes the result to recover the standard
+        // `[vocabSize, hiddenSize]` row table. Both `embed_tokens`
+        // and (when tied) `lm_head` reuse the same MLXArray instance
+        // so identity checks on the tied path hold.
         //
-        // The Phase 3 fixture stores the embedding table in TQ-packed
-        // form (no plain row table on disk). Dequantising it requires
-        // the TQ kernel and is deferred to Task 13's forward path. A
-        // zero-filled placeholder of the right shape and dtype keeps
-        // construction-time invariants intact for the structural
-        // skeleton; replace this with the real dequantised table when
-        // wiring the forward pass.
-        let embeddingShape = [config.vocabSize, config.hiddenSize]
-        let embeddingPlaceholder = MLXArray.zeros(embeddingShape, dtype: .float16)
-        let embed = ReplicatedEmbedding.make(
+        // Phase 3 ships only the replicated-embedding strategy. A
+        // future vocab-parallel implementation would materialise just
+        // this rank's slice, but every rank still owns the full table
+        // here.
+        let embeddingTable = try materialiseEmbeddingTable(
+            modelDir: modelDir,
+            metadata: metadata,
+            embeddingLayerName: "model.embed_tokens",
+            hiddenSize: config.hiddenSize,
+            vocabSize: config.vocabSize,
+            primaryBits: primaryBits,
+            residualBits: residualBits
+        )
+        self.embed_tokens = ReplicatedEmbedding.make(
             vocabSize: config.vocabSize,
             hiddenSize: config.hiddenSize,
-            weight: embeddingPlaceholder,
+            weight: embeddingTable,
             strategy: .replicated,
             group: group
         )
-        self.embed_tokens = embed
 
-        // When `tie_word_embeddings` is true the LM head reuses the
-        // embedding's row table; otherwise it has its own table on
-        // disk. Task 13 will plug in the real load path; Task 12
-        // mirrors the same placeholder so the type assertion holds
-        // and the tied/untied branch is exercised.
+        // When `tie_word_embeddings` is true the lm_head reuses the
+        // exact embedding instance — the structural test asserts
+        // pointer identity (===), so allocating a fresh table for the
+        // tied branch would silently regress that contract. Untied
+        // models would load `lm_head.weight` from a separate TQ
+        // payload; Phase 3 fixtures all ship tied embeddings, so the
+        // untied branch is left as a precondition until needed.
         let lmHeadWeight: MLXArray
         if config.tieWordEmbeddings {
-            lmHeadWeight = embeddingPlaceholder
+            lmHeadWeight = embeddingTable
         } else {
-            lmHeadWeight = MLXArray.zeros(embeddingShape, dtype: .float16)
+            preconditionFailure(
+                "untied lm_head not yet supported by DistributedQwenModel; " +
+                "config.tieWordEmbeddings=false but no separate load path is " +
+                "wired in Phase 3"
+            )
         }
         self.lm_head = ReplicatedLMHead.make(
             vocabSize: config.vocabSize,
@@ -275,19 +324,15 @@ public final class DistributedQwenModel: Module {
             group: group
         )
 
-        // Final norm — replicated.
-        let finalNormEntry = "model.norm.weight"
-        // Verify the metadata claims this is a replicated tensor; its
-        // weight content is loaded by Task 13 along with the other
-        // RMSNorm parameters. The structural skeleton uses the
-        // default unit weight from `RMSNorm.init`.
-        if let entry = metadata.tensors[finalNormEntry] {
-            precondition(
-                entry.shardStrategy == .replicated,
-                "model.norm.weight must be replicated; got \(entry.shardStrategy)"
-            )
-        }
-        self.norm = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        // Final norm scale. Qwen2.5-Coder-3B stores it as bfloat16 in
+        // the passthrough file; load it as-is so `MLXFast.rmsNorm`
+        // operates without a dtype cast on every forward pass.
+        self.finalNormWeight = try loadReplicatedTensor(
+            modelDir: modelDir,
+            metadata: metadata,
+            tensorName: "model.norm.weight",
+            expectedDType: "BF16"
+        )
 
         // Per-layer block construction. Every block loads its six TQ
         // linear layers (q/k/v + o, gate/up + down) from the
@@ -298,6 +343,40 @@ public final class DistributedQwenModel: Module {
         blocks.reserveCapacity(config.numHiddenLayers)
         for layerIdx in 0 ..< config.numHiddenLayers {
             let prefix = "model.layers.\(layerIdx)"
+
+            // Replicated norm scales and q/k/v biases. All bfloat16
+            // in the Phase 3 fixture; loaded as-is so the forward
+            // path does not pay an extra dtype cast on every call.
+            let inputNormWeight = try loadReplicatedTensor(
+                modelDir: modelDir,
+                metadata: metadata,
+                tensorName: "\(prefix).input_layernorm.weight",
+                expectedDType: "BF16"
+            )
+            let postNormWeight = try loadReplicatedTensor(
+                modelDir: modelDir,
+                metadata: metadata,
+                tensorName: "\(prefix).post_attention_layernorm.weight",
+                expectedDType: "BF16"
+            )
+            let qBias = try loadReplicatedTensor(
+                modelDir: modelDir,
+                metadata: metadata,
+                tensorName: "\(prefix).self_attn.q_proj.bias",
+                expectedDType: "BF16"
+            )
+            let kBias = try loadReplicatedTensor(
+                modelDir: modelDir,
+                metadata: metadata,
+                tensorName: "\(prefix).self_attn.k_proj.bias",
+                expectedDType: "BF16"
+            )
+            let vBias = try loadReplicatedTensor(
+                modelDir: modelDir,
+                metadata: metadata,
+                tensorName: "\(prefix).self_attn.v_proj.bias",
+                expectedDType: "BF16"
+            )
 
             let qPayload = try loadShardedTQLayerPayload(
                 modelDir: modelDir, metadata: metadata,
@@ -438,29 +517,158 @@ public final class DistributedQwenModel: Module {
                 q_proj: qLayer,
                 k_proj: kLayer,
                 v_proj: vLayer,
-                o_proj: oLayer
+                o_proj: oLayer,
+                qBias: qBias,
+                kBias: kBias,
+                vBias: vBias
             )
             let mlp = DistributedQwenMLP(
                 gate_proj: gateLayer,
                 up_proj: upLayer,
                 down_proj: downLayer
             )
-            // RMSNorm parameters are loaded by Task 13 alongside the
-            // forward path. Default unit weights stand in here so the
-            // structural skeleton can be exercised by type-assertion
-            // tests without running compute.
-            let preAttn = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
-            let preMLP = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
 
             blocks.append(DistributedQwenTransformerBlock(
-                input_layernorm: preAttn,
+                inputLayernormWeight: inputNormWeight,
                 self_attn: attn,
-                post_attention_layernorm: preMLP,
+                postAttentionLayernormWeight: postNormWeight,
                 mlp: mlp
             ))
         }
         self.layers = blocks
 
         super.init()
+    }
+
+    // MARK: - Forward pass
+
+    /// Run the prefill forward pass on a batch of token-id sequences.
+    ///
+    /// At `worldSize = 1` the per-layer choreography matches the
+    /// single-rank reference oracle exactly: same RoPE call shape,
+    /// same SDPA scale and mask mode, same residual ordering, same
+    /// bias-add timing. Multi-rank correctness rides on the same
+    /// graph plus the row-parallel layers' `allSum` collectives,
+    /// which collapse to a no-op at size 1.
+    ///
+    /// - Parameter tokenIds: Integer-typed `MLXArray` of shape
+    ///   `[batch, length]`.
+    /// - Returns: Logits of shape `[batch, length, vocabSize]` in
+    ///   float16.
+    public func callAsFunction(_ tokenIds: MLXArray) -> MLXArray {
+        precondition(tokenIds.ndim == 2, "tokenIds must be [batch, length]; got \(tokenIds.shape)")
+
+        let batch = tokenIds.dim(0)
+        let length = tokenIds.dim(1)
+        let hiddenSize = config.hiddenSize
+        let numQHeads = config.numAttentionHeads
+        let numKVHeads = config.numKeyValueHeads
+        let headDim = hiddenSize / numQHeads
+        let attnScale = 1.0 / Float(headDim).squareRoot()
+
+        // Token embedding lookup. `MLX.take` along axis 0 of the
+        // materialised `[V, H]` table produces `[batch, length, H]`.
+        // Cast once after the lookup; the TQ kernel is most
+        // numerically consistent on fp16 inputs and keeps fp16 across
+        // its internal compute, so downstream casts are unnecessary.
+        var hidden = MLX.take(embed_tokens.weight, tokenIds, axis: 0)
+        hidden = hidden.asType(.float16)
+
+        // The TQ kernel sees a 2-D `[batch * length, H]` activation.
+        // Flatten before each projection and unflatten afterwards.
+        let qkvBatch = batch * length
+
+        for block in layers {
+            // Pre-attention RMSNorm + self-attention.
+            let preAttn = MLXFast.rmsNorm(
+                hidden,
+                weight: block.inputLayernormWeight,
+                eps: config.rmsNormEps
+            )
+
+            let preAttnFlat = preAttn.reshaped(qkvBatch, hiddenSize)
+
+            var q = block.self_attn.q_proj(preAttnFlat)
+            var k = block.self_attn.k_proj(preAttnFlat)
+            var v = block.self_attn.v_proj(preAttnFlat)
+
+            // Add q/k/v biases prior to the per-head reshape. The
+            // kernel returns fp16; the bias tensors are bf16 — a
+            // runtime-side fp16 cast keeps the dtype consistent for
+            // the subsequent reshape and RoPE.
+            q = q + block.self_attn.qBias.asType(q.dtype)
+            k = k + block.self_attn.kBias.asType(k.dtype)
+            v = v + block.self_attn.vBias.asType(v.dtype)
+
+            // Re-introduce the [batch, length] axes and split into
+            // per-head slices. Layout follows the standard Qwen2
+            // convention: (B, n_heads, L, head_dim).
+            q = q.reshaped(batch, length, numQHeads, headDim).transposed(0, 2, 1, 3)
+            k = k.reshaped(batch, length, numKVHeads, headDim).transposed(0, 2, 1, 3)
+            v = v.reshaped(batch, length, numKVHeads, headDim).transposed(0, 2, 1, 3)
+
+            q = MLXFast.RoPE(
+                q,
+                dimensions: headDim,
+                traditional: false,
+                base: config.ropeTheta,
+                scale: 1.0,
+                offset: 0
+            )
+            k = MLXFast.RoPE(
+                k,
+                dimensions: headDim,
+                traditional: false,
+                base: config.ropeTheta,
+                scale: 1.0,
+                offset: 0
+            )
+
+            // Causal mask handled by the kernel via the .causal mask
+            // mode; matches the oracle's mask choreography.
+            let attnOut = MLXFast.scaledDotProductAttention(
+                queries: q,
+                keys: k,
+                values: v,
+                scale: attnScale,
+                mask: .causal
+            )
+            // (B, n_heads, L, head_dim) -> (B, L, n_heads * head_dim).
+            let attnFlat = attnOut.transposed(0, 2, 1, 3)
+                .reshaped(batch, length, numQHeads * headDim)
+            let attnFlat2D = attnFlat.reshaped(qkvBatch, numQHeads * headDim)
+            let oOut = block.self_attn.o_proj(attnFlat2D)
+                .reshaped(batch, length, hiddenSize)
+
+            hidden = hidden + oOut
+
+            // Pre-MLP RMSNorm + SwiGLU MLP.
+            let preMLP = MLXFast.rmsNorm(
+                hidden,
+                weight: block.postAttentionLayernormWeight,
+                eps: config.rmsNormEps
+            )
+            let preMLPFlat = preMLP.reshaped(qkvBatch, hiddenSize)
+
+            let gate = block.mlp.gate_proj(preMLPFlat)
+            let up = block.mlp.up_proj(preMLPFlat)
+            let activated = MLXNN.silu(gate) * up
+            let down = block.mlp.down_proj(activated)
+                .reshaped(batch, length, hiddenSize)
+
+            hidden = hidden + down
+        }
+
+        // Final norm and lm_head projection. The lm_head matmul reuses
+        // the embedding table directly rather than re-running the TQ
+        // kernel — the kernel's output would be numerically identical
+        // to the dequant trick already paid for at construction.
+        let finalHidden = MLXFast.rmsNorm(
+            hidden,
+            weight: finalNormWeight,
+            eps: config.rmsNormEps
+        )
+        let logits = finalHidden.matmul(embed_tokens.weight.transposed(1, 0))
+        return logits
     }
 }
