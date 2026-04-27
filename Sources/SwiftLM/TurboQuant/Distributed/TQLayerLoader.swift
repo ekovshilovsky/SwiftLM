@@ -222,6 +222,88 @@ public func loadUInt32Array(
     }
 }
 
+// MARK: - Replicated non-TQ tensor loading
+
+/// Translate a safetensors dtype string to the matching MLX `DType`.
+/// Covers the dtypes that appear in TurboQuant-converted models:
+/// floating point activations (BF16, F16, F32) and the integer
+/// metadata tensors used by the companion loaders. Unknown dtypes
+/// surface as `TQLayerLoaderError.unexpectedDType` so callers see the
+/// offending tensor name instead of a silent default.
+public func mlxDType(forSafetensorsDType dtype: String, name: String) throws -> DType {
+    switch dtype {
+    case "F32":
+        return .float32
+    case "F16":
+        return .float16
+    case "BF16":
+        return .bfloat16
+    case "U8":
+        return .uint8
+    case "U32":
+        return .uint32
+    case "I32":
+        return .int32
+    case "I64":
+        return .int64
+    default:
+        throw TQLayerLoaderError.unexpectedDType(
+            name: name, expected: "F32|F16|BF16|U8|U32|I32|I64", got: dtype)
+    }
+}
+
+/// Load a replicated tensor (e.g. RMSNorm weight, attention bias) from
+/// a safetensors file by name. Resolves the tensor through the shard
+/// metadata sidecar to find the containing file, parses that file's
+/// header for the byte range, reads the bytes, and constructs an
+/// MLXArray with the safetensors-declared dtype and shape.
+///
+/// The sidecar header must report `shardStrategy == .replicated`; non-
+/// replicated tensors are loaded through the TQ layer payload path
+/// (`loadShardedTQLayerPayload`) instead. `expectedDType` is enforced
+/// against the on-disk dtype so a silently-rewritten fixture surfaces
+/// at construction time rather than as a downstream shape mismatch.
+public func loadReplicatedTensor(
+    modelDir: URL,
+    metadata: ShardMetadata,
+    tensorName: String,
+    expectedDType: String
+) throws -> MLXArray {
+    guard let entry = metadata.tensors[tensorName] else {
+        throw TQLayerLoaderError.sidecarMissingLayerWeight(tensorName)
+    }
+    precondition(
+        entry.shardStrategy == .replicated,
+        "loadReplicatedTensor requires a replicated tensor; \(tensorName) is \(entry.shardStrategy)"
+    )
+    guard entry.dtype == expectedDType else {
+        throw TQLayerLoaderError.unexpectedDType(
+            name: tensorName, expected: expectedDType, got: entry.dtype)
+    }
+
+    let safetensorsURL = modelDir.appendingPathComponent(entry.file)
+    let header = try parseSafetensorsHeader(fileURL: safetensorsURL)
+    guard let headerEntry = header[tensorName] else {
+        throw TQLayerLoaderError.missingTensor(tensorName)
+    }
+    guard headerEntry.dtype == expectedDType else {
+        throw TQLayerLoaderError.unexpectedDType(
+            name: tensorName, expected: expectedDType, got: headerEntry.dtype)
+    }
+
+    let reader = ShardAwareSafetensorsReader(fileURL: safetensorsURL)
+    let range = ShardOffsetCalculator.SliceRange(
+        offset: headerEntry.absoluteOffset,
+        length: headerEntry.length,
+        strategy: .replicated,
+        rankOutputDim: nil,
+        rankInputDim: nil
+    )
+    let data = try reader.readContiguousRange(range)
+    let dtype = try mlxDType(forSafetensorsDType: expectedDType, name: tensorName)
+    return MLXArray(data, headerEntry.shape, dtype: dtype)
+}
+
 // MARK: - TQ layer payload
 
 /// Composite payload for a single TurboQuant linear layer: the
