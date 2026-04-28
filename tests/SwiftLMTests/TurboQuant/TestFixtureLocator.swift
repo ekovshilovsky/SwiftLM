@@ -12,6 +12,14 @@
 // `let fixtureRoot = try TurboQuantTestFixtures.requireQwenCoder3B()`
 // at the top of a test method and let the failure path skip the test
 // without further branching.
+//
+// The fixture-specific accessor naming (e.g. `requireQwenCoder3B`) is
+// deliberate first-iteration scaffolding while only one converted
+// fixture is in active use. As additional fixtures land, this enum
+// gains parallel accessors and the test base classes generalise to
+// loop over every available fixture; the model code itself is already
+// architecture-driven from `config.json` and does not need changes
+// when a new fixture is added.
 
 import Foundation
 import XCTest
