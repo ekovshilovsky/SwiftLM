@@ -9,6 +9,7 @@
 
 #if DEBUG
 
+import CryptoKit
 import XCTest
 import TurboQuantKit
 
@@ -34,23 +35,35 @@ final class ClusterHandshakeTests: XCTestCase {
         let handshakeKey = fakeHandshakeKey(0xA1)
         let workingKey = fakeWorkingClusterKey(0x55)
 
-        async let coordinatorSide: Void = runClusterHandshakeCoordinator(
+        async let coordinatorSide: ClusterHandshakeCoordinatorOutcome = runClusterHandshakeCoordinator(
             handshakeKey: handshakeKey,
             workingClusterKey: workingKey,
             endpoint: pipe.endpointA
         )
-        async let joinerSide: Data = runClusterHandshakeJoiner(
+        async let joinerSide: ClusterHandshakeJoinerOutcome = runClusterHandshakeJoiner(
             handshakeKey: handshakeKey,
             endpoint: pipe.endpointB
         )
 
-        try await coordinatorSide
-        let delivered = try await joinerSide
+        let coordOutcome = try await coordinatorSide
+        let joinerOutcome = try await joinerSide
+        let delivered = joinerOutcome.workingKey
 
         XCTAssertEqual(delivered, workingKey,
                        "joiner must receive the coordinator's working key byte-for-byte")
         XCTAssertEqual(delivered.count, 32,
                        "working key must be 32 bytes — a drift here indicates protocol change")
+
+        // Both sides must derive the same per-handshake session key
+        // from the negotiated nonce pair. Surfacing that derivation
+        // through the public outcome is what lets the manager wire the
+        // post-handshake data channel without re-running the protocol.
+        let coordKeyBytes = coordOutcome.sessionKey.withUnsafeBytes { Data($0) }
+        let joinerKeyBytes = joinerOutcome.sessionKey.withUnsafeBytes { Data($0) }
+        XCTAssertEqual(coordKeyBytes, joinerKeyBytes,
+                       "session keys must match byte-for-byte across the two sides")
+        XCTAssertEqual(coordKeyBytes.count, 32,
+                       "session key must be 32 bytes — used as a 256-bit AES seed downstream")
     }
 
     // MARK: - Wrong passphrase, observed from the joiner side
@@ -191,19 +204,19 @@ final class ClusterHandshakeTests: XCTestCase {
             cutoverBytes: message2Length   // bytes of message 2, then swap in replay
         )
 
-        async let coordinatorSide: Void = runClusterHandshakeCoordinator(
+        async let coordinatorSide: ClusterHandshakeCoordinatorOutcome = runClusterHandshakeCoordinator(
             handshakeKey: handshakeKey,
             workingClusterKey: workingKey,
             endpoint: pipe.endpointA
         )
-        async let joinerSide: Data = runClusterHandshakeJoiner(
+        async let joinerSide: ClusterHandshakeJoinerOutcome = runClusterHandshakeJoiner(
             handshakeKey: handshakeKey,
             endpoint: joiner
         )
 
         // Coordinator path completes — it sent a well-formed message 4
         // that the wrapping endpoint on the joiner side threw away.
-        try await coordinatorSide
+        _ = try await coordinatorSide
         do {
             _ = try await joinerSide
             XCTFail("joiner should have rejected the replayed message 4")
@@ -239,7 +252,7 @@ final class ClusterHandshakeTests: XCTestCase {
         // opposite direction so the joiner's own send does not stall.
         // We run only the joiner half of the protocol here because
         // that is the side under test.
-        async let joinerSide: Data = runClusterHandshakeJoiner(
+        async let joinerSide: ClusterHandshakeJoinerOutcome = runClusterHandshakeJoiner(
             handshakeKey: handshakeKey,
             endpoint: pipe.endpointB
         )
@@ -311,16 +324,16 @@ final class ClusterHandshakeTests: XCTestCase {
         let pipe = TestPipe()
         let recorder = RecordingEndpoint(inner: pipe.endpointA)
 
-        async let coordinatorSide: Void = runClusterHandshakeCoordinator(
+        async let coordinatorSide: ClusterHandshakeCoordinatorOutcome = runClusterHandshakeCoordinator(
             handshakeKey: handshakeKey,
             workingClusterKey: workingKey,
             endpoint: recorder
         )
-        async let joinerSide: Data = runClusterHandshakeJoiner(
+        async let joinerSide: ClusterHandshakeJoinerOutcome = runClusterHandshakeJoiner(
             handshakeKey: handshakeKey,
             endpoint: pipe.endpointB
         )
-        try await coordinatorSide
+        _ = try await coordinatorSide
         _ = try await joinerSide
         return recorder.snapshot()
     }

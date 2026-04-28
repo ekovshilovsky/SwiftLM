@@ -208,6 +208,7 @@ let package = Package(
                 "TurboQuant/Distributed/DistributedInferenceEngineTests.swift",
                 "TurboQuant/Distributed/DecodeEquivalenceTests.swift",
                 "TurboQuant/Distributed/ClusterDataChannelTests.swift",
+                "TurboQuant/Distributed/ClusterManagerSessionTests.swift",
                 "TurboQuant/TurboQuantSingleRankModelTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
                 "TurboQuant/Integration/UpstreamRegressionTests.swift",

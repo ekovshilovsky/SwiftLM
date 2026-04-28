@@ -208,19 +208,61 @@ private func sealedKeyAAD(nonceJoiner: Data, nonceCoordinator: Data) -> Data {
     return aad
 }
 
+// MARK: - Handshake outcomes
+
+/// Outcome of a successful coordinator-side handshake. The caller can
+/// pair the returned `sessionKey` with the live transport to construct
+/// a `ClusterDataChannel` for the post-handshake control flow.
+public struct ClusterHandshakeCoordinatorOutcome: Sendable {
+
+    /// Per-handshake symmetric key derived from the handshake key and
+    /// the negotiated nonce pair. Used by the upper layer to seed the
+    /// data-channel encryption keys for this peer pairing.
+    public let sessionKey: SymmetricKey
+
+    public init(sessionKey: SymmetricKey) {
+        self.sessionKey = sessionKey
+    }
+}
+
+/// Outcome of a successful joiner-side handshake. The working cluster
+/// key is the persisted credential the joiner stores in its key store;
+/// `sessionKey` is the per-handshake symmetric key the upper layer
+/// uses to seed the data-channel encryption keys for this peer
+/// pairing.
+public struct ClusterHandshakeJoinerOutcome: Sendable {
+
+    /// Working cluster key delivered by the coordinator under the
+    /// AES-GCM-sealed final message. Persisted by the joiner's key
+    /// store so the node can rejoin the cluster across restarts.
+    public let workingKey: Data
+
+    /// Per-handshake symmetric key derived from the handshake key and
+    /// the negotiated nonce pair.
+    public let sessionKey: SymmetricKey
+
+    public init(workingKey: Data, sessionKey: SymmetricKey) {
+        self.workingKey = workingKey
+        self.sessionKey = sessionKey
+    }
+}
+
 // MARK: - Coordinator side
 
 /// Run the coordinator side of the handshake. The caller has already
 /// accepted a TCP connection from a joiner and derived `handshakeKey`
 /// from `(passphrase, clusterId)`. On success the coordinator has
 /// transmitted `workingClusterKey` under an authenticated seal to the
-/// joiner; on any failure the caller should close the endpoint and
-/// decline this join attempt.
+/// joiner and the returned outcome carries the per-handshake session
+/// key the upper layer needs to construct an encrypted data channel
+/// for this peer pairing; on any failure the caller should close the
+/// endpoint and decline this join attempt.
+@discardableResult
 public func runClusterHandshakeCoordinator(
     handshakeKey: Data,
     workingClusterKey: Data,
     endpoint: ClusterHandshakeEndpoint
-) async throws {
+) async throws -> ClusterHandshakeCoordinatorOutcome {
     let hmacKey = ClusterAuth.deriveHmacKey(handshakeKey: handshakeKey)
 
     // Message 1: read joiner's hello (type-byte + nonceJoiner).
@@ -301,6 +343,8 @@ public func runClusterHandshakeCoordinator(
     message4.append(sealed.ciphertext)
     message4.append(sealed.tag)
     try await endpoint.send(message4)
+
+    return ClusterHandshakeCoordinatorOutcome(sessionKey: sessionKey)
 }
 
 // MARK: - Joiner side
@@ -308,13 +352,15 @@ public func runClusterHandshakeCoordinator(
 /// Run the joiner side of the handshake. The caller has already
 /// connected to the coordinator and derived `handshakeKey` from
 /// `(passphrase, clusterId)`. Returns the working cluster key delivered
-/// by the coordinator. On any failure the caller should tear down the
+/// by the coordinator alongside the per-handshake session key the
+/// upper layer needs to construct an encrypted data channel for this
+/// peer pairing. On any failure the caller should tear down the
 /// endpoint and report the failure to the user — `.peerAuthFailed` in
 /// particular maps to "wrong passphrase" in user-facing copy.
 public func runClusterHandshakeJoiner(
     handshakeKey: Data,
     endpoint: ClusterHandshakeEndpoint
-) async throws -> Data {
+) async throws -> ClusterHandshakeJoinerOutcome {
     let hmacKey = ClusterAuth.deriveHmacKey(handshakeKey: handshakeKey)
 
     // Message 1: say hello with our fresh nonce. No MAC here — we have
@@ -406,9 +452,14 @@ public func runClusterHandshakeJoiner(
         nonceJoiner: nonceJoiner,
         nonceCoordinator: nonceCoordinator
     )
+    let workingKey: Data
     do {
-        return try AES.GCM.open(sealed, using: sessionKey, authenticating: aad)
+        workingKey = try AES.GCM.open(sealed, using: sessionKey, authenticating: aad)
     } catch {
         throw ClusterHandshakeError.sealOpenFailed
     }
+    return ClusterHandshakeJoinerOutcome(
+        workingKey: workingKey,
+        sessionKey: sessionKey
+    )
 }

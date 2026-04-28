@@ -24,7 +24,10 @@
 // BonjourService's stream. Rotation, heartbeats, and persistent-state
 // recovery on startup are explicitly out of scope.
 
+import CryptoKit
 import Foundation
+import MLX
+import MLXLMCommon
 import Network
 import Security
 
@@ -68,6 +71,20 @@ public actor ClusterManager {
     /// started. Guards against a second start on repeated
     /// create / join calls.
     private var bonjourStarted: Bool = false
+
+    /// Joiner-side data channel built from the live coordinator
+    /// connection once `joinCluster` completes its handshake. Stays
+    /// alive for the lifetime of the cluster session so the worker
+    /// can pump control messages off it; `nil` until the handshake
+    /// succeeds and after `stop()` has torn the channel down.
+    private var coordinatorChannel: ClusterDataChannel?
+
+    /// Coordinator-side data channels, one per joiner that has
+    /// completed the handshake. Appended to from inside the
+    /// accept-loop's per-connection task each time a fresh handshake
+    /// succeeds. Drained on `stop()` so the underlying connections
+    /// release cleanly.
+    private var joinerChannels: [ClusterDataChannel] = []
 
     // MARK: - Init
 
@@ -165,22 +182,29 @@ public actor ClusterManager {
         // route them through a logger) but do not take the manager
         // down — a bad passphrase from one joiner must not lock the
         // cluster against subsequent legitimate joiners.
+        //
+        // On a successful handshake the connection is NOT cancelled.
+        // A `ClusterDataChannel` is built around the live connection
+        // so the post-handshake control flow can use it; the channel
+        // is appended to `joinerChannels` for `beginInferenceSession`
+        // to pick up.
         let handshakeKeyForAcceptor = handshakeKey
         let workingKeyForAcceptor = workingKey
-        coordinatorAcceptTask = Task {
+        coordinatorAcceptTask = Task { [weak self] in
             for await connection in incoming {
                 // Spawn a child task per connection so a slow or
                 // hanging joiner cannot block the next one. The
                 // handshake itself is fast but the TCP transition to
                 // .ready can stall under load.
-                Task {
+                Task { [weak self] in
                     let endpoint = NWConnectionHandshakeEndpoint(
                         connection: connection,
                         alreadyStarted: true
                     )
+                    let outcome: ClusterHandshakeCoordinatorOutcome
                     do {
                         try await endpoint.waitReady()
-                        try await runClusterHandshakeCoordinator(
+                        outcome = try await runClusterHandshakeCoordinator(
                             handshakeKey: handshakeKeyForAcceptor,
                             workingClusterKey: workingKeyForAcceptor,
                             endpoint: endpoint
@@ -188,13 +212,38 @@ public actor ClusterManager {
                     } catch {
                         // Intentionally swallowed — see comment above.
                         // A structured logger belongs here later.
+                        connection.cancel()
+                        return
                     }
-                    connection.cancel()
+                    // Handshake succeeded: keep the connection live,
+                    // wrap it in a data channel, and register the
+                    // channel on the manager. The append must hop back
+                    // onto the actor's executor since this task is
+                    // detached from the actor's isolation domain.
+                    let channel = ClusterDataChannel(
+                        connection: connection,
+                        sessionKey: outcome.sessionKey,
+                        role: .coordinator
+                    )
+                    channel.startReceiving()
+                    await self?.registerJoinerChannel(channel)
                 }
             }
         }
 
         return record
+    }
+
+    /// Actor-isolated entry point for the coordinator's accept loop to
+    /// register a freshly-handshook joiner's data channel. Drops the
+    /// channel cleanly if the manager has already been stopped so a
+    /// late-arriving handshake does not resurrect torn-down state.
+    private func registerJoinerChannel(_ channel: ClusterDataChannel) {
+        guard !stopped else {
+            channel.close()
+            return
+        }
+        joinerChannels.append(channel)
     }
 
     // MARK: - Join
@@ -232,11 +281,12 @@ public actor ClusterManager {
         // The handshake is the only failure surface we persist on —
         // both the connect and the handshake are covered by one
         // do / catch so a mid-flight failure tears the connection
-        // down before surfacing.
-        let workingKey: Data
+        // down before surfacing. On success the connection is kept
+        // live for the post-handshake data channel to use.
+        let outcome: ClusterHandshakeJoinerOutcome
         do {
             try await endpoint.waitReady()
-            workingKey = try await runClusterHandshakeJoiner(
+            outcome = try await runClusterHandshakeJoiner(
                 handshakeKey: handshakeKey,
                 endpoint: endpoint
             )
@@ -244,11 +294,24 @@ public actor ClusterManager {
             connection.cancel()
             throw error
         }
-        connection.cancel()
 
-        let record = ClusterRecord(clusterId: uuidBytes, key: workingKey)
+        let record = ClusterRecord(clusterId: uuidBytes, key: outcome.workingKey)
         try keyStore.save(record)
         self.record = record
+
+        // Wrap the live connection in a joiner-role data channel so
+        // the worker loop can pump control messages off it once the
+        // caller invokes `runJoinerWorker(model:)`. The channel is
+        // started immediately so it does not miss a coordinator
+        // message that arrives between handshake completion and the
+        // worker spinning up.
+        let channel = ClusterDataChannel(
+            connection: connection,
+            sessionKey: outcome.sessionKey,
+            role: .joiner
+        )
+        channel.startReceiving()
+        coordinatorChannel = channel
 
         let discoveryHash = ClusterAuth.deriveDiscoveryHash(master: handshakeKey)
         let info = DiscoveryInfo(
@@ -287,6 +350,18 @@ public actor ClusterManager {
         stopped = true
         coordinatorAcceptTask?.cancel()
         coordinatorAcceptTask = nil
+        // Tear down any post-handshake data channels before stopping
+        // the discovery service. Closing each channel cancels its
+        // underlying NWConnection and finishes the inbound stream so
+        // worker loops observing the channel exit cleanly.
+        if let channel = coordinatorChannel {
+            channel.close()
+            coordinatorChannel = nil
+        }
+        for channel in joinerChannels {
+            channel.close()
+        }
+        joinerChannels.removeAll()
         bonjour.stop()
         bonjourStarted = false
     }
@@ -307,6 +382,121 @@ public actor ClusterManager {
     /// the actor's executor — callers consume the stream directly.
     public nonisolated func listPeers() -> AsyncStream<DiscoveredPeer> {
         return bonjour.peers()
+    }
+
+    // MARK: - Runtime layer
+
+    /// Spawn a joiner-side worker against the live data channel built
+    /// at handshake time and run its loop to completion. Returns when
+    /// the channel terminates (peer EOF, transport failure, or
+    /// `stop()` closing the channel) or when the caller's surrounding
+    /// task is cancelled.
+    ///
+    /// The closures are constructed here from the supplied model so
+    /// the worker stays decoupled from `DistributedQwenModel`'s
+    /// concrete shape — the same pattern the coordinator session uses.
+    public func runJoinerWorker(model: DistributedQwenModel) async throws {
+        guard let channel = coordinatorChannel else {
+            throw ClusterManagerError.noActiveJoinerChannel
+        }
+        let worker = JoinerInferenceWorker(
+            channel: channel,
+            forward: { tokenIds, cache in model(tokenIds, cache: cache) },
+            makeCache: { model.makeCache() }
+        )
+        await worker.run()
+    }
+
+    /// Drive one inference request to completion across all currently-
+    /// connected joiner channels and stream the resulting token events
+    /// to the caller. The model is captured by reference so its
+    /// per-process state (resident weights, configuration) is shared
+    /// across every request.
+    ///
+    /// Size-1 clusters (no joiners attached yet) are valid: the engine
+    /// runs the local model with an empty broadcast list, which
+    /// matches the validated single-rank inference path.
+    ///
+    /// Marked `async` because the engine's `generate` entry point is
+    /// actor-isolated; the awaited hop happens once at session-start
+    /// and the returned stream itself is consumed without further
+    /// actor traffic.
+    public func beginInferenceSession(
+        model: DistributedQwenModel,
+        request: CoordinatorInferenceSession.InferenceRequest
+    ) async -> AsyncThrowingStream<CoordinatorInferenceSession.TokenEvent, Error> {
+        let engine = DistributedInferenceEngine(
+            model: model,
+            joiners: joinerChannels
+        )
+        return await engine.generate(request)
+    }
+
+    /// Closure-driven variant of `beginInferenceSession` for tests and
+    /// for callers that already wrap a model with their own forward /
+    /// cache adapters. Skips the `DistributedInferenceEngine`'s model
+    /// indirection and constructs a per-request session directly so
+    /// the broadcast wiring across the manager's joiner channels can
+    /// be exercised without standing up a `DistributedQwenModel`
+    /// instance. Production callers should prefer the
+    /// model-parameterised overload above.
+    public func beginInferenceSession(
+        request: CoordinatorInferenceSession.InferenceRequest,
+        forward: @escaping CoordinatorInferenceSession.ForwardFn,
+        makeCache: @escaping CoordinatorInferenceSession.MakeCacheFn,
+        sampler: any DistributedSampler = GreedySampler()
+    ) -> AsyncThrowingStream<CoordinatorInferenceSession.TokenEvent, Error> {
+        let joiners: [InferenceControlChannel] = joinerChannels
+        let session = CoordinatorInferenceSession(
+            forward: forward,
+            makeCache: makeCache,
+            joiners: joiners,
+            sampler: sampler
+        )
+        return AsyncThrowingStream { continuation in
+            // Bridge the session's `AsyncStream<TokenEvent>` continuation
+            // shape to the outer `AsyncThrowingStream<TokenEvent>`.
+            // Mirrors the engine's drain loop so a session error
+            // surfaces on the consumer's `for try await` loop and a
+            // cancellation closes the outer stream cleanly.
+            let (sessionStream, sessionContinuation) = AsyncStream
+                .makeStream(of: CoordinatorInferenceSession.TokenEvent.self)
+
+            let serveTask = Task {
+                let serveResult: Task<Void, Error> = Task {
+                    try await session.serve(request, stream: sessionContinuation)
+                }
+                for await event in sessionStream {
+                    continuation.yield(event)
+                }
+                do {
+                    try await serveResult.value
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                serveTask.cancel()
+            }
+        }
+    }
+
+    // MARK: - Test affordances
+
+    /// Snapshot of the current joiner-channel list. Internal-only so
+    /// tests can assert on the post-handshake channel registration
+    /// without exposing the underlying storage to the public API.
+    internal func _joinerChannelsForTesting() -> [ClusterDataChannel] {
+        return joinerChannels
+    }
+
+    /// Snapshot of the joiner-side coordinator channel. Internal-only
+    /// for the same reason as `_joinerChannelsForTesting()`.
+    internal func _coordinatorChannelForTesting() -> ClusterDataChannel? {
+        return coordinatorChannel
     }
 
     // MARK: - Helpers
@@ -368,6 +558,11 @@ public enum ClusterManagerError: Error, CustomStringConvertible {
     /// a fresh instance to re-enter the cluster lifecycle.
     case managerStopped
 
+    /// `runJoinerWorker` was invoked before `joinCluster` succeeded
+    /// (or after `stop()` tore the channel down). The worker has no
+    /// transport to bind to without a live coordinator channel.
+    case noActiveJoinerChannel
+
     public var description: String {
         switch self {
         case .peerMissingClusterId:
@@ -380,6 +575,8 @@ public enum ClusterManagerError: Error, CustomStringConvertible {
             return "ClusterManager: NWConnection was cancelled before the handshake completed"
         case .managerStopped:
             return "ClusterManager: operation attempted after stop() — construct a new instance"
+        case .noActiveJoinerChannel:
+            return "ClusterManager: runJoinerWorker invoked without an active coordinator channel — call joinCluster first"
         }
     }
 }
