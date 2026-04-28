@@ -395,6 +395,19 @@ public actor ClusterManager {
     /// The closures are constructed here from the supplied model so
     /// the worker stays decoupled from `DistributedQwenModel`'s
     /// concrete shape — the same pattern the coordinator session uses.
+    ///
+    /// **Call site convention.** This method blocks for the cluster's
+    /// useful lifetime, so production callers wrap it in a detached
+    /// `Task` and store the returned handle for graceful shutdown:
+    ///
+    /// ```swift
+    /// let workerTask = Task { try await manager.runJoinerWorker(model: model) }
+    /// // ... on SIGTERM:
+    /// workerTask.cancel()
+    /// ```
+    ///
+    /// Cancelling the surrounding task closes the channel and unblocks
+    /// the worker loop cleanly.
     public func runJoinerWorker(model: DistributedQwenModel) async throws {
         guard let channel = coordinatorChannel else {
             throw ClusterManagerError.noActiveJoinerChannel
@@ -416,6 +429,16 @@ public actor ClusterManager {
     /// Size-1 clusters (no joiners attached yet) are valid: the engine
     /// runs the local model with an empty broadcast list, which
     /// matches the validated single-rank inference path.
+    ///
+    /// **Joiner snapshot semantics.** The joiner-channel list is
+    /// captured at session-start; joiners that complete their
+    /// handshake after this method is called are not included in the
+    /// session's broadcast list. Callers that need a specific
+    /// world-size should wait for all joiners to attach before
+    /// starting inference (e.g. block on the cluster's expected size
+    /// in a setup phase, then start serving requests). Mixing in-flight
+    /// handshakes with active sessions is supported but produces
+    /// non-deterministic world sizes per request.
     ///
     /// Marked `async` because the engine's `generate` entry point is
     /// actor-isolated; the awaited hop happens once at session-start

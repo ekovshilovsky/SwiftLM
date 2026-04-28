@@ -73,7 +73,13 @@ public enum ClusterDataKeys {
     public static let dataKeyLength = 32
 
     /// Derive the coordinator-to-joiner data key from the handshake
-    /// session key.
+    /// session key. The HKDF salt is omitted; per RFC 5869 §2.2 the
+    /// no-salt variant defaults to a `HashLen`-byte zero string,
+    /// which is acceptable here because the input key material
+    /// (`sessionKey`) is already a uniformly-random 256-bit value
+    /// produced by `ClusterAuth.deriveSessionKey` from the handshake.
+    /// Domain separation between the two directions is provided by
+    /// the distinct `info` strings.
     public static func coordToJoinerKey(sessionKey: SymmetricKey) -> SymmetricKey {
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: sessionKey,
@@ -83,7 +89,8 @@ public enum ClusterDataKeys {
     }
 
     /// Derive the joiner-to-coordinator data key from the handshake
-    /// session key.
+    /// session key. See the `coordToJoinerKey` doc for the rationale
+    /// behind omitting the HKDF salt.
     public static func joinerToCoordKey(sessionKey: SymmetricKey) -> SymmetricKey {
         return HKDF<SHA256>.deriveKey(
             inputKeyMaterial: sessionKey,
@@ -281,6 +288,12 @@ public final class ClusterDataChannel: InferenceControlChannel, @unchecked Senda
     private var receiveStarted = false
     private var closed = false
 
+    /// Handle for the detached receive task started by
+    /// `startReceiving()`. Stored so `close()` can cancel an in-flight
+    /// `NWConnection.receive` rather than waiting for the connection's
+    /// own cancellation to unblock the read.
+    private var receiveTask: Task<Void, Never>?
+
     // Inbound stream + its continuation. The continuation is
     // resolved by the receive `Task` (yields on each successful
     // decode, finishes on any error or peer EOF).
@@ -354,13 +367,23 @@ public final class ClusterDataChannel: InferenceControlChannel, @unchecked Senda
             connection.start(queue: connectionQueue)
         }
 
-        Task.detached { [weak self] in
-            await self?.runReceiveLoop()
+        // Hold a strong reference for the loop's lifetime. The channel
+        // owns its connection and is owned by ClusterManager, so the
+        // task naturally outlives at most the channel's `close()`
+        // call; cancellation is what tears the loop down, not garbage
+        // collection. A `[weak self]` capture would let the loop
+        // silently drop without finishing `inboundContinuation` if the
+        // channel were ever deallocated mid-flight, leaving consumers
+        // hung on `inbound`.
+        receiveTask = Task.detached {
+            await self.runReceiveLoop()
         }
     }
 
     /// Cancel the underlying connection and finish `inbound`. Safe to
-    /// call from any task; subsequent calls are no-ops.
+    /// call from any task; subsequent calls are no-ops. Cancels the
+    /// receive task so a stuck `NWConnection.receive` does not leave
+    /// the loop alive after the channel has been closed.
     public func close() {
         let shouldClose: Bool = lifecycleLock.withLock {
             if closed { return false }
@@ -368,6 +391,7 @@ public final class ClusterDataChannel: InferenceControlChannel, @unchecked Senda
             return true
         }
         guard shouldClose else { return }
+        receiveTask?.cancel()
         connection.cancel()
         inboundContinuation.finish()
     }
@@ -382,8 +406,15 @@ public final class ClusterDataChannel: InferenceControlChannel, @unchecked Senda
                 throw ClusterDataChannelError.sendCounterExhausted
             }
             let counter = sendCounter
-            sendCounter += 1
+            // Build BEFORE advancing the counter so a throw from
+            // `buildOutboundFrame` (theoretical: a future change that
+            // adds a fallible step would expose this) does not leave
+            // the channel in a state where the counter has advanced
+            // past the actual last-sent frame. `lastTransmittedFrame`
+            // and `sendCounter` are mutated together so the test
+            // affordance always reflects what actually went on the wire.
             let built = try buildOutboundFrame(message: message, counter: counter)
+            sendCounter += 1
             lastTransmittedFrame = built
             return built
         }
@@ -477,21 +508,37 @@ public final class ClusterDataChannel: InferenceControlChannel, @unchecked Senda
     /// ordering guarantee from `sendQueue` is preserved because we
     /// hand the frame to NW's own ordered send pipeline before
     /// returning.
+    ///
+    /// The send is wrapped in `withTaskCancellationHandler` so a
+    /// cancelled surrounding task tears the underlying connection
+    /// down rather than waiting indefinitely for an unresponsive
+    /// peer's TCP receive window to drain. Without this, a stalled
+    /// joiner's send blocks the coordinator's broadcast loop and the
+    /// HTTP handler's request-timeout cancellation cannot unstick it.
     private func transmit(_ frame: Data) async throws {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            let box = SendContinuationBox(cont)
-            connection.send(
-                content: frame,
-                contentContext: .defaultMessage,
-                isComplete: false,
-                completion: .contentProcessed { error in
-                    if let error {
-                        box.tryResume(throwing: error)
-                    } else {
-                        box.tryResume(returning: ())
+        let connectionRef = connection
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                let box = SendContinuationBox(cont)
+                connectionRef.send(
+                    content: frame,
+                    contentContext: .defaultMessage,
+                    isComplete: false,
+                    completion: .contentProcessed { error in
+                        if let error {
+                            box.tryResume(throwing: error)
+                        } else {
+                            box.tryResume(returning: ())
+                        }
                     }
-                }
-            )
+                )
+            }
+        } onCancel: {
+            // Closes the underlying socket; any in-flight
+            // `NWConnection.send` surfaces a cancellation error
+            // through the completion handler, which the box
+            // forwards to the suspended continuation.
+            connectionRef.cancel()
         }
     }
 
@@ -561,16 +608,26 @@ public final class ClusterDataChannel: InferenceControlChannel, @unchecked Senda
 
         let receivedCounter = parseCounter(from: nonceBytes)
 
-        // Replay / regression check. The first accepted frame on a
-        // fresh channel is allowed to have any counter value (the
-        // peer normally starts at 0, but the channel does not assume
-        // it). After that, every counter must strictly exceed the
-        // last accepted one.
+        // Replay / regression check. The peer's send counter starts
+        // at 0 and increments by exactly 1 per frame; the receive side
+        // enforces the same invariant. The first accepted frame must
+        // have counter == 0; subsequent frames must be exactly one
+        // greater than the last accepted counter (strict-monotonic).
+        // Out-of-order or duplicated frames surface as
+        // `nonceCounterReuseDetected` rather than silently advancing
+        // the receive watermark.
         if hasAcceptedAnyReceiveFrame {
             guard receivedCounter > lastAcceptedReceiveCounter else {
                 throw ClusterDataChannelError.nonceCounterReuseDetected(
                     received: receivedCounter,
                     lastAccepted: lastAcceptedReceiveCounter
+                )
+            }
+        } else {
+            guard receivedCounter == 0 else {
+                throw ClusterDataChannelError.nonceCounterReuseDetected(
+                    received: receivedCounter,
+                    lastAccepted: 0
                 )
             }
         }
