@@ -903,12 +903,13 @@ struct MLXServer: AsyncParsableCommand {
 
         // Chat completions — handler extracted to avoid type-checker timeout
         let promptCache = PromptCache()
-        router.post("/v1/chat/completions") { request, _ -> Response in
+        router.post("/v1/chat/completions") { [clusterBringUp] request, _ -> Response in
             do {
                 let bodyData = try await collectBody(request)
                 return try await handleChatCompletion(
                     bodyData: bodyData, config: config, container: container, semaphore: semaphore, stats: stats, promptCache: promptCache,
-                    draftModelRef: draftModelRef, numDraftTokens: numDraftTokensConfig
+                    draftModelRef: draftModelRef, numDraftTokens: numDraftTokensConfig,
+                    clusterBringUp: clusterBringUp
                 )
             } catch {
                 let errMsg = String(describing: error).replacingOccurrences(of: "\"", with: "'")
@@ -1329,8 +1330,57 @@ func handleChatCompletion(
     stats: ServerStats,
     promptCache: PromptCache,
     draftModelRef: DraftModelRef? = nil,
-    numDraftTokens: Int = 4
+    numDraftTokens: Int = 4,
+    clusterBringUp: ClusterBringUp? = nil
 ) async throws -> Response {
+    // Early routing decision when this server is part of a distributed
+    // cluster. The decision is a pure function of the bring-up state
+    // and the live joiner count; running it before any tokenisation
+    // means joiners short-circuit without touching the local model and
+    // coordinators with attached joiners route through the distributed
+    // engine instead of the single-node path.
+    if let bringUp = clusterBringUp {
+        let joinerCount = await bringUp.manager.attachedJoinerCount()
+        let route = decideChatCompletionRoute(
+            clusterBringUp: bringUp,
+            attachedJoinerCount: joinerCount
+        )
+        switch route {
+        case .joinerUnavailable:
+            let payload = """
+            {"error":{"message":"this node is a cluster joiner; chat completions are served by the coordinator","type":"invalid_request_error","code":"joiner_role"}}
+            """
+            return Response(
+                status: .serviceUnavailable,
+                headers: jsonHeaders(),
+                body: .init(byteBuffer: ByteBuffer(string: payload))
+            )
+        case .distributed:
+            // Coordinator-side distributed-engine entry point. The
+            // route decision guarantees the coordinator model is
+            // non-nil, so the force-unwrap inside is safe; the
+            // dedicated function exists primarily so the dispatch
+            // infrastructure (request decoding, sampling-param
+            // mapping, SSE detokenisation) is wired up and exercisable
+            // ahead of the coordinator-model loader integration.
+            return try await runDistributedChatCompletion(
+                bodyData: bodyData,
+                config: config,
+                container: container,
+                clusterManager: bringUp.manager,
+                distributedModel: bringUp.coordinatorModel!,
+                semaphore: semaphore,
+                stats: stats
+            )
+        case .singleNode:
+            // Fall through to the existing single-node path. No
+            // distributed peers to fan out to (or the coordinator
+            // model is not available yet), so the local generator
+            // path is the correct response.
+            break
+        }
+    }
+
     let chatReq = try JSONDecoder().decode(ChatCompletionRequest.self, from: bodyData)
     let isStream = chatReq.stream ?? false
     let jsonMode = chatReq.responseFormat?.type == "json_object"
@@ -1985,6 +2035,297 @@ func extractThinkingBlock(from text: String) -> (String?, String) {
     let thinking = String(text[startRange.upperBound..<endRange.lowerBound])
     let remaining = String(text[endRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
     return (thinking.isEmpty ? nil : thinking, remaining)
+}
+
+// ── Distributed Chat Completions ─────────────────────────────────────────────
+
+/// Drive one chat-completion request through the distributed
+/// inference engine. Mirrors the OpenAI response shape of the
+/// single-node path so a cluster-served response is byte-compatible
+/// with what clients see when no cluster is attached.
+///
+/// The function is reachable from `handleChatCompletion` only when
+/// the coordinator has attached joiners and a coordinator-side
+/// `DistributedQwenModel` has been wired up. The single-node path
+/// remains the fallback for every other configuration.
+func runDistributedChatCompletion(
+    bodyData: Data,
+    config: ServerConfig,
+    container: ModelContainer,
+    clusterManager: ClusterManager,
+    distributedModel: DistributedQwenModel,
+    semaphore: AsyncSemaphore,
+    stats: ServerStats
+) async throws -> Response {
+    let chatReq = try JSONDecoder().decode(ChatCompletionRequest.self, from: bodyData)
+    let isStream = chatReq.stream ?? false
+
+    let tokenLimit = chatReq.maxTokens ?? config.maxTokens
+    let temperature = chatReq.temperature.map(Float.init) ?? config.temp
+    let topP = chatReq.topP.map(Float.init) ?? config.topP
+    let topK = chatReq.topK ?? config.topK
+    let extraStops = ["<end_of_turn>", "<|im_end|>", "<|eot_id|>", "<turn|>", "<|tool_response|>"]
+    let stopSequences = (chatReq.stop ?? []) + extraStops
+    let includeUsage = chatReq.streamOptions?.includeUsage ?? false
+
+    // Apply the chat template to produce a token-id prompt. The
+    // distributed engine consumes integer prompt tokens directly; the
+    // tokenizer hop replaces the single-node path's UserInput
+    // construction.
+    let messageDicts: [[String: any Sendable]] = chatReq.messages.map { msg in
+        var dict: [String: any Sendable] = [
+            "role": msg.role,
+            "content": msg.textContent
+        ]
+        if let toolCallId = msg.tool_call_id {
+            dict["tool_call_id"] = toolCallId
+        }
+        return dict
+    }
+
+    let tokenizer = await container.tokenizer
+    let promptTokens: [Int]
+    do {
+        promptTokens = try tokenizer.applyChatTemplate(messages: messageDicts)
+    } catch {
+        let errMsg = String(describing: error).replacingOccurrences(of: "\"", with: "'")
+        let payload = """
+        {"error":{"message":"\(errMsg)","type":"invalid_request_error","code":"chat_template_error"}}
+        """
+        return Response(
+            status: .badRequest,
+            headers: jsonHeaders(),
+            body: .init(byteBuffer: ByteBuffer(string: payload))
+        )
+    }
+    guard !promptTokens.isEmpty else {
+        let payload = """
+        {"error":{"message":"chat template produced an empty prompt","type":"invalid_request_error","code":"empty_prompt"}}
+        """
+        return Response(
+            status: .badRequest,
+            headers: jsonHeaders(),
+            body: .init(byteBuffer: ByteBuffer(string: payload))
+        )
+    }
+
+    // Map the OpenAI request's sampling fields onto the distributed
+    // SamplingParams. Stop tokens that the tokenizer can resolve from
+    // text strings are forwarded; sequences that do not map to a
+    // single token id are dropped (the distributed engine's stop
+    // criterion is token-id based).
+    let stopTokenIds: [Int] = stopSequences.compactMap { seq in
+        tokenizer.convertTokenToId(seq)
+    }
+    let sampling = SamplingParams(
+        temperature: temperature,
+        topK: topK,
+        topP: topP,
+        maxTokens: tokenLimit,
+        stopTokens: stopTokenIds
+    )
+    let seed: UInt64
+    if let requested = chatReq.seed {
+        seed = UInt64(bitPattern: Int64(requested))
+    } else {
+        seed = UInt64.random(in: 0...UInt64.max)
+    }
+    let request = CoordinatorInferenceSession.InferenceRequest(
+        promptTokens: promptTokens,
+        sampling: sampling,
+        seed: seed
+    )
+
+    await semaphore.wait()
+    await stats.requestStarted()
+    let genStart = Date()
+
+    let eventStream = await clusterManager.beginInferenceSession(
+        model: distributedModel,
+        request: request
+    )
+    let modelId = config.modelId
+    let promptTokenCount = promptTokens.count
+
+    if isStream {
+        return distributedChatStreamingResponse(
+            events: eventStream,
+            tokenizer: tokenizer,
+            modelId: modelId,
+            promptTokenCount: promptTokenCount,
+            includeUsage: includeUsage,
+            semaphore: semaphore,
+            stats: stats,
+            genStart: genStart
+        )
+    } else {
+        return try await distributedChatNonStreamingResponse(
+            events: eventStream,
+            tokenizer: tokenizer,
+            modelId: modelId,
+            promptTokenCount: promptTokenCount,
+            semaphore: semaphore,
+            stats: stats,
+            genStart: genStart
+        )
+    }
+}
+
+/// SSE response builder for distributed chat completions. Drives a
+/// `NaiveStreamingDetokenizer` from the engine's token events and
+/// emits `chat.completion.chunk` frames in the OpenAI shape.
+private func distributedChatStreamingResponse(
+    events: AsyncThrowingStream<CoordinatorInferenceSession.TokenEvent, Error>,
+    tokenizer: any MLXLMCommon.Tokenizer,
+    modelId: String,
+    promptTokenCount: Int,
+    includeUsage: Bool,
+    semaphore: AsyncSemaphore,
+    stats: ServerStats,
+    genStart: Date
+) -> Response {
+    let (sseStream, cont) = AsyncStream<String>.makeStream()
+
+    Task {
+        var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
+        var completionTokenCount = 0
+        var finishReason: String? = nil
+
+        do {
+            for try await event in events {
+                switch event {
+                case .delta(let token):
+                    detokenizer.append(token: token)
+                    completionTokenCount += 1
+                    while let chunk = detokenizer.next() {
+                        cont.yield(sseChunk(
+                            modelId: modelId,
+                            reasoningContent: nil,
+                            content: chunk,
+                            finishReason: nil
+                        ))
+                    }
+                case .finish(let reason):
+                    switch reason {
+                    case .stopToken: finishReason = "stop"
+                    case .maxTokens: finishReason = "length"
+                    case .cancelled: finishReason = "stop"
+                    case .error(let msg):
+                        let errMsg = msg.replacingOccurrences(of: "\"", with: "'")
+                        cont.yield("data: {\"error\":{\"message\":\"\(errMsg)\",\"type\":\"server_error\",\"code\":\"distributed_engine_error\"}}\r\n\r\n")
+                    }
+                }
+            }
+        } catch {
+            let errMsg = String(describing: error)
+                .replacingOccurrences(of: "\"", with: "'")
+            cont.yield("data: {\"error\":{\"message\":\"\(errMsg)\",\"type\":\"server_error\",\"code\":\"distributed_engine_error\"}}\r\n\r\n")
+        }
+
+        cont.yield(sseChunk(
+            modelId: modelId,
+            reasoningContent: nil,
+            content: nil,
+            finishReason: finishReason ?? "stop"
+        ))
+        if includeUsage {
+            cont.yield(sseUsageChunk(
+                modelId: modelId,
+                promptTokens: promptTokenCount,
+                completionTokens: completionTokenCount
+            ))
+        }
+        cont.yield("data: [DONE]\r\n\r\n")
+        cont.finish()
+
+        let duration = Date().timeIntervalSince(genStart)
+        await stats.requestFinished(tokens: completionTokenCount, duration: duration)
+        await semaphore.signal()
+    }
+
+    let body = ResponseBody(asyncSequence: sseStream.map { ByteBuffer(string: $0) })
+    return Response(
+        status: .ok,
+        headers: sseHeaders(),
+        body: body
+    )
+}
+
+/// Non-streaming response builder for distributed chat completions.
+/// Collects every emitted token, decodes once, and serialises the
+/// `chat.completion` JSON envelope used by the single-node path.
+private func distributedChatNonStreamingResponse(
+    events: AsyncThrowingStream<CoordinatorInferenceSession.TokenEvent, Error>,
+    tokenizer: any MLXLMCommon.Tokenizer,
+    modelId: String,
+    promptTokenCount: Int,
+    semaphore: AsyncSemaphore,
+    stats: ServerStats,
+    genStart: Date
+) async throws -> Response {
+    var collectedTokens: [Int] = []
+    var finishReason = "stop"
+    var engineError: String?
+
+    do {
+        for try await event in events {
+            switch event {
+            case .delta(let token):
+                collectedTokens.append(token)
+            case .finish(let reason):
+                switch reason {
+                case .stopToken: finishReason = "stop"
+                case .maxTokens: finishReason = "length"
+                case .cancelled: finishReason = "stop"
+                case .error(let msg): engineError = msg
+                }
+            }
+        }
+    } catch {
+        engineError = String(describing: error)
+    }
+
+    let duration = Date().timeIntervalSince(genStart)
+    await stats.requestFinished(tokens: collectedTokens.count, duration: duration)
+    await semaphore.signal()
+
+    if let engineError {
+        let errMsg = engineError.replacingOccurrences(of: "\"", with: "'")
+        let payload = """
+        {"error":{"message":"\(errMsg)","type":"server_error","code":"distributed_engine_error"}}
+        """
+        return Response(
+            status: .internalServerError,
+            headers: jsonHeaders(),
+            body: .init(byteBuffer: ByteBuffer(string: payload))
+        )
+    }
+
+    let text = tokenizer.decode(tokenIds: collectedTokens)
+    let totalTokens = promptTokenCount + collectedTokens.count
+    let resp = ChatCompletionResponse(
+        id: "chatcmpl-\(UUID().uuidString)",
+        model: modelId,
+        created: Int(Date().timeIntervalSince1970),
+        choices: [
+            Choice(
+                index: 0,
+                message: AssistantMessage(role: "assistant", content: text),
+                finishReason: finishReason
+            )
+        ],
+        usage: TokenUsage(
+            promptTokens: promptTokenCount,
+            completionTokens: collectedTokens.count,
+            totalTokens: totalTokens
+        )
+    )
+    let encoded = try JSONEncoder().encode(resp)
+    return Response(
+        status: .ok,
+        headers: jsonHeaders(),
+        body: .init(byteBuffer: ByteBuffer(data: encoded))
+    )
 }
 
 // ── Text Completions Handler ─────────────────────────────────────────────────

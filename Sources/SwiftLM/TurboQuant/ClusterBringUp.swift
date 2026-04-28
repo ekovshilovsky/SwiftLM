@@ -17,17 +17,43 @@ import MLXLMCommon
 
 /// Bundle of cluster-formation outputs the server keeps alive for the
 /// lifetime of the HTTP listener. The manager is the entry point for
-/// joiner registration and (when chat-completions handler routing is
-/// wired in) request dispatch. The worker task is non-nil only on a
-/// joiner node — it owns the inference loop that pumps control
-/// messages off the coordinator channel.
-public struct ClusterBringUp: Sendable {
+/// joiner registration and request dispatch from the chat-completions
+/// handler. The worker task is non-nil only on a joiner node — it
+/// owns the inference loop that pumps control messages off the
+/// coordinator channel.
+///
+/// The optional `coordinatorModel` is the rank-local
+/// `DistributedQwenModel` the coordinator hands to
+/// `ClusterManager.beginInferenceSession`. Production v1 leaves this
+/// `nil`; the chat-completions handler treats a nil model as "not
+/// equipped to drive distributed inference" and falls through to the
+/// existing single-node generation path. Coordinator-side model
+/// instantiation lands in a follow-up that integrates the model
+/// loader with the distributed inference engine.
+///
+/// `@unchecked Sendable` because `DistributedQwenModel` is an `MLXNN`
+/// module subclass and inherits non-Sendable storage from `Module`.
+/// In production the model is constructed once on the coordinator and
+/// only entered through the `ClusterManager` actor's session APIs, so
+/// concurrent access to the underlying module is mediated by the
+/// actor's executor. Tests that drive the bring-up directly do the
+/// same.
+public struct ClusterBringUp: @unchecked Sendable {
     public let manager: ClusterManager
+    public let role: DistributedNodeRole
     public let workerTask: Task<Void, Error>?
+    public let coordinatorModel: DistributedQwenModel?
 
-    public init(manager: ClusterManager, workerTask: Task<Void, Error>?) {
+    public init(
+        manager: ClusterManager,
+        role: DistributedNodeRole,
+        workerTask: Task<Void, Error>?,
+        coordinatorModel: DistributedQwenModel? = nil
+    ) {
         self.manager = manager
+        self.role = role
         self.workerTask = workerTask
+        self.coordinatorModel = coordinatorModel
     }
 }
 
@@ -197,7 +223,7 @@ public func startCluster(
             passphrase: passphrase,
             clusterName: nil
         )
-        return ClusterBringUp(manager: manager, workerTask: nil)
+        return ClusterBringUp(manager: manager, role: .primary, workerTask: nil)
 
     case .secondary:
         // Start the joiner's BonjourService so its NWBrowser is live
@@ -225,12 +251,12 @@ public func startCluster(
         // endpoints to the cluster).
         let model = try joinerModelBuilder(modelDirectory)
         guard let resolvedModel = model else {
-            return ClusterBringUp(manager: manager, workerTask: nil)
+            return ClusterBringUp(manager: manager, role: .secondary, workerTask: nil)
         }
         let workerTask = Task { [manager] in
             try await manager.runJoinerWorker(model: resolvedModel)
         }
-        return ClusterBringUp(manager: manager, workerTask: workerTask)
+        return ClusterBringUp(manager: manager, role: .secondary, workerTask: workerTask)
     }
 }
 

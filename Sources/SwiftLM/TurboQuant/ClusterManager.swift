@@ -507,6 +507,17 @@ public actor ClusterManager {
         }
     }
 
+    /// Number of joiners that have completed the cluster handshake and
+    /// are currently registered on this coordinator. Returned as a
+    /// simple count rather than the channel list so callers cannot
+    /// retain references to the underlying transport. The value is a
+    /// snapshot at the time the actor services the call; the
+    /// chat-completions router reads it to decide whether the
+    /// distributed-inference path has any peers to fan out to.
+    public func attachedJoinerCount() -> Int {
+        return joinerChannels.count
+    }
+
     // MARK: - Test affordances
 
     /// Snapshot of the current joiner-channel list. Internal-only so

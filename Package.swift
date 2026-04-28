@@ -213,6 +213,7 @@ let package = Package(
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
                 "TurboQuant/Integration/UpstreamRegressionTests.swift",
                 "TurboQuant/Integration/DistributedBringUpTests.swift",
+                "TurboQuant/Integration/DistributedChatCompletionsTests.swift",
             ],
             linkerSettings: [
                 .unsafeFlags([
