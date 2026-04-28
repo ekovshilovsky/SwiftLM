@@ -212,6 +212,7 @@ let package = Package(
                 "TurboQuant/TurboQuantSingleRankModelTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
                 "TurboQuant/Integration/UpstreamRegressionTests.swift",
+                "TurboQuant/Integration/DistributedBringUpTests.swift",
             ],
             linkerSettings: [
                 .unsafeFlags([

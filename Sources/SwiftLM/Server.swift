@@ -360,17 +360,32 @@ struct MLXServer: AsyncParsableCommand {
             return
         }
 
-        // --distributed without the cluster-formation code wired up is
-        // not a silent no-op: exit with a clear pointer to what's missing.
+        // --distributed cluster bring-up is gated on the user supplying
+        // a passphrase via the `SWIFTLM_CLUSTER_PASSPHRASE` environment
+        // variable. The env-var path is preferred over a CLI flag so the
+        // passphrase does not surface in `ps` listings or shell history.
+        // Other delivery mechanisms (CLI flag, file path) are intentional
+        // future work; surface a precise error rather than silently
+        // refusing or prompting interactively.
+        let clusterPassphrase: String?
         if distributedOptions.isDistributed {
-            print("""
-                [SwiftLM] --distributed requested, but Bonjour-based cluster
-                formation (node discovery, handshake, key propagation) is
-                not yet wired. Use --tq-distributed with --tq-hostfile for
-                the legacy hostfile-based path, or wait for cluster
-                formation integration.
-                """)
-            throw ExitCode(EX_TEMPFAIL)
+            guard
+                let raw = ProcessInfo.processInfo.environment["SWIFTLM_CLUSTER_PASSPHRASE"],
+                !raw.isEmpty
+            else {
+                print(
+                    """
+                    [SwiftLM] --distributed requires the cluster passphrase to be \
+                    provided via the SWIFTLM_CLUSTER_PASSPHRASE environment variable. \
+                    Set the variable and retry; the CLI does not currently accept \
+                    the passphrase as a flag or via a prompt.
+                    """
+                )
+                throw ExitCode(EX_USAGE)
+            }
+            clusterPassphrase = raw
+        } else {
+            clusterPassphrase = nil
         }
 
         // --layer-type-report depends on model-internal inspection that
@@ -740,6 +755,37 @@ struct MLXServer: AsyncParsableCommand {
             print("[SwiftLM] 🧠 Auto-calibration (Wisdom) bypassed for SSD Streaming")
         }
 
+        // ── Bonjour-based cluster bring-up ──
+        // Construct the ClusterManager and run the role-specific create
+        // or join flow now that the model is resident in memory. The
+        // returned `ClusterBringUp` carries the manager instance plus
+        // any joiner worker task; both are torn down in the cleanup
+        // block after `app.runService()` returns or throws so the
+        // manager does not outlive the HTTP server. The manager is
+        // bound to a local immutable so the chat-completions handler
+        // can capture it once routing is wired through.
+        let clusterBringUp: ClusterBringUp?
+        if distributedOptions.isDistributed, let passphrase = clusterPassphrase {
+            do {
+                let keyStore = try FileClusterKeyStore.default()
+                clusterBringUp = try await startCluster(
+                    options: distributedOptions,
+                    passphrase: passphrase,
+                    modelId: modelId,
+                    modelDirectory: modelDirectory,
+                    keyStore: keyStore
+                )
+                if let role = distributedOptions.role {
+                    print("[SwiftLM] Bonjour cluster bring-up complete (role=\(role.rawValue))")
+                }
+            } catch let err as ClusterBringUpError {
+                print("[SwiftLM] cluster bring-up failed: \(err)")
+                throw ExitCode.failure
+            }
+        } else {
+            clusterBringUp = nil
+        }
+
         print("[SwiftLM] Model loaded. Starting HTTP server on \(host):\(port)")
 
         // ── Capture CLI defaults into a shared config ──
@@ -1011,7 +1057,18 @@ struct MLXServer: AsyncParsableCommand {
         shutdownSource.resume()
         interruptSource.resume()
 
-        try await app.runService()
+        // The cluster bring-up state must not outlive the HTTP server.
+        // Wrap the service's lifetime in a do/catch so the joiner worker
+        // task is cancelled and the manager is stopped on both clean
+        // exit and propagated error paths. (`defer` cannot await actor-
+        // isolated calls, so explicit teardown is required here.)
+        do {
+            try await app.runService()
+        } catch {
+            await tearDownCluster(clusterBringUp)
+            throw error
+        }
+        await tearDownCluster(clusterBringUp)
     }
 
     /// Locate the tq-dequant binary from the turboquant-mlx-core CMake build.
