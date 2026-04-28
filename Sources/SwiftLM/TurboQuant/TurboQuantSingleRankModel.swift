@@ -34,16 +34,30 @@
 //     reshape into per-head tensors. o_proj, gate_proj, up_proj, and
 //     down_proj have no biases in the Qwen2.5 architecture.
 //
-// Forward pass. Implements a standard Qwen2 prefill: token embedding
-// lookup, 36 transformer blocks (RMSNorm -> GQA self-attention with
+// Forward pass. Implements a standard Qwen2 decoder: token embedding
+// lookup, N transformer blocks (RMSNorm -> GQA self-attention with
 // RoPE -> residual -> RMSNorm -> SwiGLU MLP -> residual), final
 // RMSNorm, and the lm_head matmul against the materialised embedding
-// table. No KV cache, no decoding loop, no streaming sampler — just
-// prefill logits suitable for use as a numerical oracle in the
-// distributed-model equivalence test.
+// table.
+//
+// The forward pass supports both prefill (no cache argument) and
+// incremental decode (caller supplies one `KVCache` per transformer
+// block via `cache:`). When a cache is supplied, RoPE is applied at
+// the cache's current offset so position encodings advance correctly
+// across decode steps, the cache is updated with the rotated
+// per-block keys and values, and the SDPA mask is sourced from
+// `KVCache.makeMask` rather than the prefill `.causal` shorthand.
+//
+// The compressed `TurboQuantKVCache` Swift bridge in
+// `TurboQuantBridge.swift` operates on raw byte buffers and would
+// require Data round-tripping per decode step; wiring it into this
+// path is intentionally deferred. `KVCacheSimple` from MLXLMCommon is
+// the canonical interface in this codebase and is used here to
+// validate the cache-aware forward path.
 
 import Foundation
 import MLX
+import MLXLMCommon
 import MLXNN
 
 /// Errors specific to the single-rank reference model. Construction
@@ -364,14 +378,44 @@ public final class TurboQuantSingleRankModel {
 
     // MARK: - Forward pass
 
-    /// Run the prefill forward pass on a batch of token-id sequences.
+    /// Allocate one `KVCacheSimple` per transformer block. Cache
+    /// ownership is the *caller*'s responsibility; the model itself
+    /// remains stateless and the array is threaded through subsequent
+    /// `callAsFunction(_:cache:)` invocations during incremental
+    /// decode. Each cache is sized for `numKeyValueHeads * headDim`
+    /// (the rank's full KV-head slice at single-rank).
+    public func makeCache() -> [KVCache] {
+        (0 ..< config.numHiddenLayers).map { _ in KVCacheSimple() }
+    }
+
+    /// Run the forward pass on a batch of token-id sequences.
     ///
-    /// - Parameter tokenIds: Integer-typed `MLXArray` of shape
-    ///   `[batch, length]`.
+    /// - Parameters:
+    ///   - tokenIds: Integer-typed `MLXArray` of shape
+    ///     `[batch, length]`.
+    ///   - cache: Optional per-block KV cache list. When `nil`, runs a
+    ///     cache-less prefill identical to the original forward path.
+    ///     When non-`nil`, must contain exactly `config.numHiddenLayers`
+    ///     entries. Each block's cache is updated in-place with the
+    ///     rotated keys / values for the new tokens, and attention
+    ///     attends across the cache's accumulated history plus the new
+    ///     positions. RoPE is applied at the cache's pre-update offset
+    ///     so positional encodings advance correctly across decode
+    ///     steps.
     /// - Returns: Logits of shape `[batch, length, vocabSize]` in
     ///   float16.
-    public func callAsFunction(_ tokenIds: MLXArray) -> MLXArray {
+    public func callAsFunction(
+        _ tokenIds: MLXArray,
+        cache: [KVCache]? = nil
+    ) -> MLXArray {
         precondition(tokenIds.ndim == 2, "tokenIds must be [batch, length]; got \(tokenIds.shape)")
+        if let cache {
+            precondition(
+                cache.count == config.numHiddenLayers,
+                "cache must have one entry per transformer block; " +
+                "expected \(config.numHiddenLayers), got \(cache.count)"
+            )
+        }
 
         let batch = tokenIds.dim(0)
         let length = tokenIds.dim(1)
@@ -397,7 +441,9 @@ public final class TurboQuantSingleRankModel {
         // re-introducing the length axis.
         let qkvBatch = batch * length
 
-        for block in blocks {
+        for (blockIdx, block) in blocks.enumerated() {
+            let blockCache = cache?[blockIdx]
+
             // Pre-attention RMSNorm + self-attention.
             let preAttn = MLXFast.rmsNorm(
                 hidden,
@@ -420,10 +466,20 @@ public final class TurboQuantSingleRankModel {
 
             // Re-introduce the [batch, length] axes and split into
             // per-head slices. Layout follows the standard Qwen2
-            // convention: (B, n_heads, L, head_dim).
+            // convention: (B, n_heads, L, head_dim). Cache entries are
+            // stored in this same layout so the cache update can drop
+            // straight in.
             q = q.reshaped(batch, length, numQHeads, headDim).transposed(0, 2, 1, 3)
             k = k.reshaped(batch, length, numKVHeads, headDim).transposed(0, 2, 1, 3)
             v = v.reshaped(batch, length, numKVHeads, headDim).transposed(0, 2, 1, 3)
+
+            // RoPE must be applied at the cache's current offset so
+            // tokens appended during decode receive the rotation
+            // appropriate to their absolute position in the sequence.
+            // `KVCacheSimple.update` advances `offset` by the new
+            // length, so the offset must be sampled before the update
+            // call below.
+            let ropeOffset = blockCache?.offset ?? 0
 
             q = MLXFast.RoPE(
                 q,
@@ -431,7 +487,7 @@ public final class TurboQuantSingleRankModel {
                 traditional: false,
                 base: config.ropeTheta,
                 scale: 1.0,
-                offset: 0
+                offset: ropeOffset
             )
             k = MLXFast.RoPE(
                 k,
@@ -439,17 +495,39 @@ public final class TurboQuantSingleRankModel {
                 traditional: false,
                 base: config.ropeTheta,
                 scale: 1.0,
-                offset: 0
+                offset: ropeOffset
             )
 
-            // Causal mask handled by the kernel via the .causal mask
-            // mode; no explicit additive mask needed for prefill.
+            // Cache update happens after RoPE so the stored keys carry
+            // the rotation. The cache returns the full `[0, offset+L)`
+            // span of keys / values; `MLXFast.scaledDotProductAttention`
+            // handles the GQA broadcast internally so the small
+            // (numKVHeads) tensors are passed through unmodified.
+            let attendKeys: MLXArray
+            let attendValues: MLXArray
+            let mask: MLXFast.ScaledDotProductAttentionMaskMode
+            if let blockCache {
+                let (cachedKeys, cachedValues) = blockCache.update(keys: k, values: v)
+                attendKeys = cachedKeys
+                attendValues = cachedValues
+                // `KVCache.makeMask` returns the right mask shape for
+                // attention over the cached + new keys: `.none` for a
+                // single new token, `.causal` for multi-token prefill
+                // with offset 0, and an explicit array mask when the
+                // cached history requires per-row masking.
+                mask = blockCache.makeMask(n: length, windowSize: nil, returnArray: false)
+            } else {
+                attendKeys = k
+                attendValues = v
+                mask = .causal
+            }
+
             let attnOut = MLXFast.scaledDotProductAttention(
                 queries: q,
-                keys: k,
-                values: v,
+                keys: attendKeys,
+                values: attendValues,
                 scale: attnScale,
-                mask: .causal
+                mask: mask
             )
             // (B, n_heads, L, head_dim) -> (B, L, n_heads * head_dim).
             let attnFlat = attnOut.transposed(0, 2, 1, 3)

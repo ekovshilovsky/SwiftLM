@@ -70,6 +70,10 @@ let package = Package(
                 .product(name: "TurboQuantC", package: "turboquant-mlx-core"),
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
+                // KVCache / KVCacheSimple protocol surface used by the
+                // cache-aware forward paths in TurboQuantSingleRankModel
+                // and DistributedQwenModel for incremental decode.
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 "CArgon2",
             ],
             path: "Sources/SwiftLM/TurboQuant"
@@ -196,6 +200,7 @@ let package = Package(
                 "TurboQuant/Distributed/ReplicatedEmbeddingTests.swift",
                 "TurboQuant/Distributed/DistributedQwenModelTests.swift",
                 "TurboQuant/Distributed/DistributedQwenForwardPassTests.swift",
+                "TurboQuant/Distributed/DecodeEquivalenceTests.swift",
                 "TurboQuant/TurboQuantSingleRankModelTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
                 "TurboQuant/Integration/UpstreamRegressionTests.swift",
