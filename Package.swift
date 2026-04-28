@@ -201,6 +201,7 @@ let package = Package(
                 "TurboQuant/Distributed/DistributedQwenModelTests.swift",
                 "TurboQuant/Distributed/DistributedQwenForwardPassTests.swift",
                 "TurboQuant/Distributed/DistributedQwenWorldSize2Tests.swift",
+                "TurboQuant/Distributed/InferenceControlProtocolTests.swift",
                 "TurboQuant/Distributed/DecodeEquivalenceTests.swift",
                 "TurboQuant/TurboQuantSingleRankModelTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
