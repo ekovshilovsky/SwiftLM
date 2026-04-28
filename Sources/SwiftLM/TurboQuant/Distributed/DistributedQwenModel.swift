@@ -240,6 +240,40 @@ public final class DistributedQwenTransformerBlock: Module {
 
 // MARK: - Top-level model
 
+/// Construction-time errors raised by `DistributedQwenModel.init`.
+/// Thrown rather than fatal so callers (including the HTTP layer and
+/// the test harness) can recover from misconfiguration cleanly.
+public enum DistributedQwenModelError: Error, CustomStringConvertible {
+    /// `config.tieWordEmbeddings` is false but the loader has no
+    /// implementation for an independently-trained `lm_head` weight.
+    /// Qwen2.5-Coder-3B fixtures all ship tied embeddings, so the
+    /// untied branch surfaces here until a dedicated load path lands.
+    case untiedLMHeadNotSupported
+    /// A configuration field that must be evenly divisible by the
+    /// world size is not. Carries the offending field name, value,
+    /// and world size so the caller can format an actionable message
+    /// (e.g. "select a different rank count or fixture").
+    case worldSizeNotDivisor(field: String, value: Int, worldSize: Int)
+    /// The caller supplied an externally-materialised embedding table
+    /// whose shape or dtype does not match the model configuration.
+    case embeddingTableMismatch(expectedShape: [Int], gotShape: [Int],
+                                expectedDType: DType, gotDType: DType)
+
+    public var description: String {
+        switch self {
+        case .untiedLMHeadNotSupported:
+            return "untied lm_head is not supported by DistributedQwenModel; " +
+                "config.tieWordEmbeddings=false but no separate load path is wired"
+        case .worldSizeNotDivisor(let field, let value, let worldSize):
+            return "DistributedQwenModel requires \(field) (=\(value)) to be " +
+                "evenly divisible by worldSize=\(worldSize)"
+        case .embeddingTableMismatch(let es, let gs, let ed, let gd):
+            return "supplied embedding table has shape \(gs) dtype \(gd); " +
+                "expected shape \(es) dtype \(ed)"
+        }
+    }
+}
+
 /// Tensor-parallel Qwen decoder model. Construction loads every
 /// sharded layer from the model directory and assembles the block
 /// stack. The forward pass mirrors the single-rank reference oracle's
@@ -251,6 +285,23 @@ public final class DistributedQwenModel: Module {
     public let rank: Int
     public let worldSize: Int
 
+    /// Number of attention heads owned by this rank under
+    /// column-parallel QKV sharding. Equal to
+    /// `config.numAttentionHeads / worldSize`. Cached so the forward
+    /// pass does not have to recompute it per block.
+    public let rankNumQHeads: Int
+    /// Number of key-value heads owned by this rank.
+    public let rankNumKVHeads: Int
+    /// Per-rank intermediate (MLP hidden) dim under column-parallel
+    /// gate / up sharding.
+    public let rankIntermediate: Int
+    /// Q-side flattened width for this rank: `rankNumQHeads * headDim`.
+    public let rankQDim: Int
+    /// K/V-side flattened width for this rank: `rankNumKVHeads * headDim`.
+    public let rankKVDim: Int
+    /// Standard Qwen2 head dim: `hiddenSize / numAttentionHeads`.
+    public let headDim: Int
+
     public let embed_tokens: ReplicatedEmbedding
     public let layers: [DistributedQwenTransformerBlock]
     /// Final RMSNorm scale, replicated and stored in the safetensors
@@ -260,46 +311,46 @@ public final class DistributedQwenModel: Module {
     public let finalNormWeight: MLXArray
     public let lm_head: ReplicatedLMHead
 
-    /// Build a rank-local distributed Qwen model.
+    /// Build a rank-local distributed Qwen model. Convenience entry
+    /// point that materialises the embedding table internally.
     ///
     /// - Parameters:
     ///   - metadata: Decoded `tq_shard_metadata.json` sidecar.
     ///   - modelDir: Directory holding the safetensors files plus
     ///     the standard HuggingFace `config.json`.
     ///   - group: MLX distributed group; `group.rank` and
-    ///     `group.size` drive shard selection.
+    ///     `group.size` drive shard selection by default. The
+    ///     explicit `rank` and `worldSize` parameters override the
+    ///     group's identity for in-process multi-rank tests.
     ///   - primaryBits / residualBits: TurboQuant bit widths. Default
     ///     to the 4+4 layout shipped by tq-convert; override only for
     ///     fixtures produced with a non-standard quantizer
     ///     configuration.
-    public init(
+    ///   - rank: Override for the rank used to slice this model's
+    ///     shards. Defaults to `group.rank`. The override exists so
+    ///     in-process tests can construct multiple rank-local models
+    ///     against a singleton `DistributedGroup` without standing up
+    ///     a real multi-process backend (multi-process numerical
+    ///     equivalence is exercised separately).
+    ///   - worldSize: Override for the world size. Defaults to
+    ///     `group.size`. Tests pair this with `rank` to sweep through
+    ///     every shard of an N-way layout in a single process.
+    public convenience init(
         metadata: ShardMetadata,
         modelDir: URL,
         group: DistributedGroup,
         primaryBits: Int = 4,
-        residualBits: Int = 4
+        residualBits: Int = 4,
+        rank: Int? = nil,
+        worldSize: Int? = nil
     ) throws {
+        // Materialise the embedding table once and forward to the
+        // designated init. Callers that want to share an
+        // already-materialised table across multiple model instances
+        // should construct via the `embeddingTable:`-accepting init
+        // directly so the ~600 MB allocation is not duplicated.
         let configURL = modelDir.appendingPathComponent("config.json")
         let config = try DistributedQwenConfiguration.load(from: configURL)
-        self.config = config
-        self.group = group
-        let rank = group.rank
-        let worldSize = group.size
-        self.rank = rank
-        self.worldSize = worldSize
-
-        // Embedding table materialisation. The Qwen2.5-Coder-3B fixture stores
-        // the embedding in TQ-packed form (no plain row table on
-        // disk); the shared helper runs the kernel on an identity
-        // input and transposes the result to recover the standard
-        // `[vocabSize, hiddenSize]` row table. Both `embed_tokens`
-        // and (when tied) `lm_head` reuse the same MLXArray instance
-        // so identity checks on the tied path hold.
-        //
-        // The current implementation ships only the replicated-embedding strategy. A
-        // future vocab-parallel implementation would materialise just
-        // this rank's slice, but every rank still owns the full table
-        // here.
         let embeddingTable = try materialiseEmbeddingTable(
             modelDir: modelDir,
             metadata: metadata,
@@ -309,6 +360,119 @@ public final class DistributedQwenModel: Module {
             primaryBits: primaryBits,
             residualBits: residualBits
         )
+        try self.init(
+            metadata: metadata,
+            modelDir: modelDir,
+            group: group,
+            embeddingTable: embeddingTable,
+            primaryBits: primaryBits,
+            residualBits: residualBits,
+            rank: rank,
+            worldSize: worldSize
+        )
+    }
+
+    /// Designated initialiser. Accepts an externally-materialised
+    /// embedding table so multiple model instances can share the same
+    /// ~600 MB `[vocabSize, hiddenSize]` allocation. The Metal
+    /// allocator's wired-memory ceiling on a single process is the
+    /// reason this matters in practice: hosting more than one model
+    /// per process (the oracle plus the rank-local distributed model
+    /// in equivalence tests, or a coordinator and joiner in the same
+    /// process) requires the embedding to be a single allocation
+    /// rather than two.
+    ///
+    /// - Parameters:
+    ///   - metadata: Decoded `tq_shard_metadata.json` sidecar.
+    ///   - modelDir: Directory holding the safetensors files plus the
+    ///     standard HuggingFace `config.json`.
+    ///   - group: MLX distributed group used to resolve `allSum`
+    ///     collectives at forward time.
+    ///   - embeddingTable: Pre-materialised `[vocabSize, hiddenSize]`
+    ///     float16 row table. Validated against the configuration.
+    ///     The same MLXArray instance is reused for both
+    ///     `embed_tokens` and (when tied) `lm_head`.
+    ///   - primaryBits / residualBits: TurboQuant bit widths.
+    ///   - rank: Override for the rank used to slice this model's
+    ///     shards. See the convenience init for rationale.
+    ///   - worldSize: Override for the world size.
+    public init(
+        metadata: ShardMetadata,
+        modelDir: URL,
+        group: DistributedGroup,
+        embeddingTable: MLXArray,
+        primaryBits: Int = 4,
+        residualBits: Int = 4,
+        rank: Int? = nil,
+        worldSize: Int? = nil
+    ) throws {
+        let configURL = modelDir.appendingPathComponent("config.json")
+        let config = try DistributedQwenConfiguration.load(from: configURL)
+        self.config = config
+        self.group = group
+        let resolvedRank = rank ?? group.rank
+        let resolvedWorldSize = worldSize ?? group.size
+        self.rank = resolvedRank
+        self.worldSize = resolvedWorldSize
+
+        // Tensor-parallel sharding splits q/k heads, KV heads, and the
+        // MLP intermediate dim evenly across ranks. The fixture's
+        // GQA layout fixes `numKeyValueHeads = 2` for Qwen2.5-Coder-3B
+        // — only `worldSize ∈ {1, 2}` works for that fixture. Surface
+        // the constraint as a thrown error so a misconfigured
+        // worldSize fails at construction with a clear field name
+        // rather than as a downstream shape mismatch.
+        if config.numAttentionHeads % resolvedWorldSize != 0 {
+            throw DistributedQwenModelError.worldSizeNotDivisor(
+                field: "numAttentionHeads",
+                value: config.numAttentionHeads,
+                worldSize: resolvedWorldSize)
+        }
+        if config.numKeyValueHeads % resolvedWorldSize != 0 {
+            throw DistributedQwenModelError.worldSizeNotDivisor(
+                field: "numKeyValueHeads",
+                value: config.numKeyValueHeads,
+                worldSize: resolvedWorldSize)
+        }
+        if config.intermediateSize % resolvedWorldSize != 0 {
+            throw DistributedQwenModelError.worldSizeNotDivisor(
+                field: "intermediateSize",
+                value: config.intermediateSize,
+                worldSize: resolvedWorldSize)
+        }
+
+        let headDim = config.hiddenSize / config.numAttentionHeads
+        let rankNumQHeads = config.numAttentionHeads / resolvedWorldSize
+        let rankNumKVHeads = config.numKeyValueHeads / resolvedWorldSize
+        let rankIntermediate = config.intermediateSize / resolvedWorldSize
+        let rankQDim = rankNumQHeads * headDim
+        let rankKVDim = rankNumKVHeads * headDim
+        self.headDim = headDim
+        self.rankNumQHeads = rankNumQHeads
+        self.rankNumKVHeads = rankNumKVHeads
+        self.rankIntermediate = rankIntermediate
+        self.rankQDim = rankQDim
+        self.rankKVDim = rankKVDim
+
+        // Validate the supplied embedding table against the config.
+        // Catching shape/dtype drift here avoids opaque downstream
+        // failures inside `MLX.take` or the lm_head matmul.
+        let expectedShape = [config.vocabSize, config.hiddenSize]
+        let expectedDType: DType = .float16
+        if embeddingTable.shape != expectedShape || embeddingTable.dtype != expectedDType {
+            throw DistributedQwenModelError.embeddingTableMismatch(
+                expectedShape: expectedShape,
+                gotShape: embeddingTable.shape,
+                expectedDType: expectedDType,
+                gotDType: embeddingTable.dtype)
+        }
+
+        // Both `embed_tokens` and (when tied) `lm_head` reuse the same
+        // MLXArray instance so identity checks on the tied path hold.
+        // The current implementation ships only the
+        // replicated-embedding strategy. A future vocab-parallel
+        // implementation would materialise just this rank's slice, but
+        // every rank still owns the full table here.
         self.embed_tokens = ReplicatedEmbedding.make(
             vocabSize: config.vocabSize,
             hiddenSize: config.hiddenSize,
@@ -322,17 +486,12 @@ public final class DistributedQwenModel: Module {
         // pointer identity (===), so allocating a fresh table for the
         // tied branch would silently regress that contract. Untied
         // models would load `lm_head.weight` from a separate TQ
-        // payload; Qwen2.5-Coder-3B fixtures all ship tied embeddings, so the
-        // untied branch is left as a precondition until needed.
+        // payload; Qwen2.5-Coder-3B fixtures all ship tied embeddings.
         let lmHeadWeight: MLXArray
         if config.tieWordEmbeddings {
             lmHeadWeight = embeddingTable
         } else {
-            preconditionFailure(
-                "untied lm_head not yet supported by DistributedQwenModel; " +
-                "config.tieWordEmbeddings=false but no separate load path is " +
-                "wired"
-            )
+            throw DistributedQwenModelError.untiedLMHeadNotSupported
         }
         self.lm_head = ReplicatedLMHead.make(
             vocabSize: config.vocabSize,
@@ -359,11 +518,25 @@ public final class DistributedQwenModel: Module {
         // in the matching sharded-layer types.
         var blocks: [DistributedQwenTransformerBlock] = []
         blocks.reserveCapacity(config.numHiddenLayers)
+
+        // Sidecar lookup helper. Reads the full input dimension for a
+        // tensor directly off the metadata document so row-parallel
+        // construction does not depend on the loader's
+        // already-halved `inFeatures` field. The sidecar stores
+        // `weight.shape = [outFeatures, fullInFeatures]` per
+        // HuggingFace convention.
+        func sidecarFullInFeatures(_ layerName: String) throws -> Int {
+            guard let entry = metadata.tensors["\(layerName).weight"] else {
+                throw TQLayerLoaderError.sidecarMissingLayerWeight(layerName)
+            }
+            return entry.shape[1]
+        }
+
         for layerIdx in 0 ..< config.numHiddenLayers {
             let prefix = "model.layers.\(layerIdx)"
 
-            // Replicated norm scales and q/k/v biases. All bfloat16
-            // in the Qwen2.5-Coder-3B fixture; loaded as-is so the forward
+            // Replicated norm scales. All bfloat16 in the
+            // Qwen2.5-Coder-3B fixture; loaded as-is so the forward
             // path does not pay an extra dtype cast on every call.
             let inputNormWeight = try loadReplicatedTensor(
                 modelDir: modelDir,
@@ -377,61 +550,79 @@ public final class DistributedQwenModel: Module {
                 tensorName: "\(prefix).post_attention_layernorm.weight",
                 expectedDType: "BF16"
             )
-            let qBias = try loadReplicatedTensor(
+
+            // q/k/v biases. The convert tool ships the full-width
+            // bias because the underlying tensor has no shard
+            // strategy. Each rank holds only the slice that aligns
+            // with its column-parallel projection's output. Slicing
+            // here keeps the bias-add in the forward pass dimensionally
+            // consistent with the projection output. `.contiguous()`
+            // materialises a fresh dense buffer because the bias-add
+            // expects contiguous storage.
+            let qBiasFull = try loadReplicatedTensor(
                 modelDir: modelDir,
                 metadata: metadata,
                 tensorName: "\(prefix).self_attn.q_proj.bias",
                 expectedDType: "BF16"
             )
-            let kBias = try loadReplicatedTensor(
+            let kBiasFull = try loadReplicatedTensor(
                 modelDir: modelDir,
                 metadata: metadata,
                 tensorName: "\(prefix).self_attn.k_proj.bias",
                 expectedDType: "BF16"
             )
-            let vBias = try loadReplicatedTensor(
+            let vBiasFull = try loadReplicatedTensor(
                 modelDir: modelDir,
                 metadata: metadata,
                 tensorName: "\(prefix).self_attn.v_proj.bias",
                 expectedDType: "BF16"
             )
+            let qBiasStart = resolvedRank * rankQDim
+            let qBiasEnd = qBiasStart + rankQDim
+            let kBiasStart = resolvedRank * rankKVDim
+            let kBiasEnd = kBiasStart + rankKVDim
+            let vBiasStart = resolvedRank * rankKVDim
+            let vBiasEnd = vBiasStart + rankKVDim
+            let qBias = qBiasFull[qBiasStart ..< qBiasEnd].contiguous()
+            let kBias = kBiasFull[kBiasStart ..< kBiasEnd].contiguous()
+            let vBias = vBiasFull[vBiasStart ..< vBiasEnd].contiguous()
 
             let qPayload = try loadShardedTQLayerPayload(
                 modelDir: modelDir, metadata: metadata,
                 layerName: "\(prefix).self_attn.q_proj",
                 primaryBits: primaryBits, residualBits: residualBits,
-                role: .columnParallel, rank: rank, worldSize: worldSize)
+                role: .columnParallel, rank: resolvedRank, worldSize: resolvedWorldSize)
             let kPayload = try loadShardedTQLayerPayload(
                 modelDir: modelDir, metadata: metadata,
                 layerName: "\(prefix).self_attn.k_proj",
                 primaryBits: primaryBits, residualBits: residualBits,
-                role: .columnParallel, rank: rank, worldSize: worldSize)
+                role: .columnParallel, rank: resolvedRank, worldSize: resolvedWorldSize)
             let vPayload = try loadShardedTQLayerPayload(
                 modelDir: modelDir, metadata: metadata,
                 layerName: "\(prefix).self_attn.v_proj",
                 primaryBits: primaryBits, residualBits: residualBits,
-                role: .columnParallel, rank: rank, worldSize: worldSize)
+                role: .columnParallel, rank: resolvedRank, worldSize: resolvedWorldSize)
             let oPayload = try loadShardedTQLayerPayload(
                 modelDir: modelDir, metadata: metadata,
                 layerName: "\(prefix).self_attn.o_proj",
                 primaryBits: primaryBits, residualBits: residualBits,
-                role: .rowParallel, rank: rank, worldSize: worldSize)
+                role: .rowParallel, rank: resolvedRank, worldSize: resolvedWorldSize)
 
             let gatePayload = try loadShardedTQLayerPayload(
                 modelDir: modelDir, metadata: metadata,
                 layerName: "\(prefix).mlp.gate_proj",
                 primaryBits: primaryBits, residualBits: residualBits,
-                role: .columnParallel, rank: rank, worldSize: worldSize)
+                role: .columnParallel, rank: resolvedRank, worldSize: resolvedWorldSize)
             let upPayload = try loadShardedTQLayerPayload(
                 modelDir: modelDir, metadata: metadata,
                 layerName: "\(prefix).mlp.up_proj",
                 primaryBits: primaryBits, residualBits: residualBits,
-                role: .columnParallel, rank: rank, worldSize: worldSize)
+                role: .columnParallel, rank: resolvedRank, worldSize: resolvedWorldSize)
             let downPayload = try loadShardedTQLayerPayload(
                 modelDir: modelDir, metadata: metadata,
                 layerName: "\(prefix).mlp.down_proj",
                 primaryBits: primaryBits, residualBits: residualBits,
-                role: .rowParallel, rank: rank, worldSize: worldSize)
+                role: .rowParallel, rank: resolvedRank, worldSize: resolvedWorldSize)
 
             let qLayer = try TurboQuantAllToShardedLinear(
                 fullInFeatures: qPayload.inFeatures,
@@ -473,10 +664,13 @@ public final class DistributedQwenModel: Module {
                 blockSize: vPayload.blockSize,
                 group: group)
             // Row-parallel `o_proj`: `localInFeatures` is the per-rank
-            // input slice; `fullInFeatures` is the original input dim
-            // and feeds the kernel's combined_scale derivation.
+            // input slice; `fullInFeatures` comes from the sidecar
+            // entry's full weight shape so the kernel's combined_scale
+            // derivation does not depend on the loader's halved
+            // `inFeatures` value.
+            let oFullIn = try sidecarFullInFeatures("\(prefix).self_attn.o_proj")
             let oLayer = try TurboQuantShardedToAllLinear(
-                fullInFeatures: oPayload.inFeatures * worldSize,
+                fullInFeatures: oFullIn,
                 rankOutFeatures: oPayload.outFeatures,
                 localInFeatures: oPayload.inFeatures,
                 primaryBits: primaryBits, residualBits: residualBits,
@@ -488,7 +682,8 @@ public final class DistributedQwenModel: Module {
                 seedPrimary: oPayload.seedPrimary,
                 seedResidual: oPayload.seedResidual,
                 blockSize: oPayload.blockSize,
-                group: group)
+                group: group,
+                worldSize: resolvedWorldSize)
 
             let gateLayer = try TurboQuantAllToShardedLinear(
                 fullInFeatures: gatePayload.inFeatures,
@@ -516,8 +711,9 @@ public final class DistributedQwenModel: Module {
                 seedResidual: upPayload.seedResidual,
                 blockSize: upPayload.blockSize,
                 group: group)
+            let downFullIn = try sidecarFullInFeatures("\(prefix).mlp.down_proj")
             let downLayer = try TurboQuantShardedToAllLinear(
-                fullInFeatures: downPayload.inFeatures * worldSize,
+                fullInFeatures: downFullIn,
                 rankOutFeatures: downPayload.outFeatures,
                 localInFeatures: downPayload.inFeatures,
                 primaryBits: primaryBits, residualBits: residualBits,
@@ -529,7 +725,8 @@ public final class DistributedQwenModel: Module {
                 seedPrimary: downPayload.seedPrimary,
                 seedResidual: downPayload.seedResidual,
                 blockSize: downPayload.blockSize,
-                group: group)
+                group: group,
+                worldSize: resolvedWorldSize)
 
             let attn = DistributedQwenAttention(
                 q_proj: qLayer,
@@ -611,9 +808,6 @@ public final class DistributedQwenModel: Module {
         let batch = tokenIds.dim(0)
         let length = tokenIds.dim(1)
         let hiddenSize = config.hiddenSize
-        let numQHeads = config.numAttentionHeads
-        let numKVHeads = config.numKeyValueHeads
-        let headDim = hiddenSize / numQHeads
         let attnScale = 1.0 / Float(headDim).squareRoot()
 
         // Token embedding lookup. `MLX.take` along axis 0 of the
@@ -647,19 +841,23 @@ public final class DistributedQwenModel: Module {
             // Add q/k/v biases prior to the per-head reshape. The
             // kernel returns fp16; the bias tensors are bf16 — a
             // runtime-side fp16 cast keeps the dtype consistent for
-            // the subsequent reshape and RoPE.
+            // the subsequent reshape and RoPE. Both projection output
+            // and bias are sized to this rank's head slice.
             q = q + block.self_attn.qBias.asType(q.dtype)
             k = k + block.self_attn.kBias.asType(k.dtype)
             v = v + block.self_attn.vBias.asType(v.dtype)
 
             // Re-introduce the [batch, length] axes and split into
             // per-head slices. Layout follows the standard Qwen2
-            // convention: (B, n_heads, L, head_dim). Cache entries
-            // are stored in this same layout so the cache update can
-            // drop straight in.
-            q = q.reshaped(batch, length, numQHeads, headDim).transposed(0, 2, 1, 3)
-            k = k.reshaped(batch, length, numKVHeads, headDim).transposed(0, 2, 1, 3)
-            v = v.reshaped(batch, length, numKVHeads, headDim).transposed(0, 2, 1, 3)
+            // convention: (B, n_heads, L, head_dim). Each rank holds
+            // `numAttentionHeads / worldSize` Q heads and
+            // `numKeyValueHeads / worldSize` KV heads, so the reshape
+            // operates on rank-local head counts. Cache entries are
+            // stored in this same layout so the cache update can drop
+            // straight in.
+            q = q.reshaped(batch, length, rankNumQHeads, headDim).transposed(0, 2, 1, 3)
+            k = k.reshaped(batch, length, rankNumKVHeads, headDim).transposed(0, 2, 1, 3)
+            v = v.reshaped(batch, length, rankNumKVHeads, headDim).transposed(0, 2, 1, 3)
 
             // RoPE is applied at the cache's current offset so tokens
             // appended during decode receive the rotation appropriate
@@ -717,10 +915,23 @@ public final class DistributedQwenModel: Module {
                 scale: attnScale,
                 mask: mask
             )
-            // (B, n_heads, L, head_dim) -> (B, L, n_heads * head_dim).
+            // (B, n_heads, L, head_dim) -> (B, L, rankQDim). Each
+            // rank's attention output is sized to its rank-local head
+            // slice and feeds the row-parallel `o_proj`, whose
+            // `localInFeatures == rankQDim`. The o_proj precondition
+            // checks the activation's last dim against
+            // `block.self_attn.o_proj.rankInputDim`; surface a wiring
+            // mismatch loudly here rather than as an opaque kernel
+            // failure further in.
+            precondition(
+                block.self_attn.o_proj.rankInputDim == rankQDim,
+                "row-parallel o_proj rankInputDim=" +
+                "\(block.self_attn.o_proj.rankInputDim) does not match " +
+                "the rank-local attention output width rankQDim=\(rankQDim)"
+            )
             let attnFlat = attnOut.transposed(0, 2, 1, 3)
-                .reshaped(batch, length, numQHeads * headDim)
-            let attnFlat2D = attnFlat.reshaped(qkvBatch, numQHeads * headDim)
+                .reshaped(batch, length, rankQDim)
+            let attnFlat2D = attnFlat.reshaped(qkvBatch, rankQDim)
             let oOut = block.self_attn.o_proj(attnFlat2D)
                 .reshaped(batch, length, hiddenSize)
 
@@ -737,6 +948,18 @@ public final class DistributedQwenModel: Module {
             let gate = block.mlp.gate_proj(preMLPFlat)
             let up = block.mlp.up_proj(preMLPFlat)
             let activated = MLXNN.silu(gate) * up
+            // The SwiGLU output's last dim is the rank-local
+            // intermediate slice and must match the row-parallel
+            // `down_proj`'s input. A mismatch here would indicate a
+            // shard-loading bug; surface it as a clear precondition
+            // rather than as an opaque kernel failure.
+            precondition(
+                block.mlp.down_proj.rankInputDim == rankIntermediate,
+                "row-parallel down_proj rankInputDim=" +
+                "\(block.mlp.down_proj.rankInputDim) does not match the " +
+                "rank-local SwiGLU output width rankIntermediate=" +
+                "\(rankIntermediate)"
+            )
             let down = block.mlp.down_proj(activated)
                 .reshaped(batch, length, hiddenSize)
 

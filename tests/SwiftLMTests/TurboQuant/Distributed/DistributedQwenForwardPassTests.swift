@@ -81,15 +81,36 @@ final class DistributedQwenForwardPassTests: XCTestCase {
         let metadataURL = fixtureRoot.appendingPathComponent("tq_shard_metadata.json")
         let metadata = try ShardMetadata(jsonData: Data(contentsOf: metadataURL))
 
+        let configURL = fixtureRoot.appendingPathComponent("config.json")
+        let config = try DistributedQwenConfiguration.load(from: configURL)
+
+        // Materialise the embedding table once and share it across
+        // both model instances. The dequant produces a ~600 MB
+        // [vocab, hidden] table; allocating it twice in one process
+        // trips the Metal allocator's wired-memory ceiling.
+        let embeddingTable = try materialiseEmbeddingTable(
+            modelDir: fixtureRoot,
+            metadata: metadata,
+            embeddingLayerName: "model.embed_tokens",
+            hiddenSize: config.hiddenSize,
+            vocabSize: config.vocabSize,
+            primaryBits: 4,
+            residualBits: 4
+        )
+
         // `DistributedGroup()` on a singleton process returns rank 0,
         // size 1 — the size-1 equivalence configuration.
         let group = DistributedGroup()
         let dist = try DistributedQwenModel(
             metadata: metadata,
             modelDir: fixtureRoot,
-            group: group
+            group: group,
+            embeddingTable: embeddingTable
         )
-        let ref = try TurboQuantSingleRankModel(directory: fixtureRoot)
+        let ref = try TurboQuantSingleRankModel(
+            directory: fixtureRoot,
+            embeddingTable: embeddingTable
+        )
 
         // Five-token deterministic prompt. Covers prefill, RoPE
         // application across positions, and gives the equivalence

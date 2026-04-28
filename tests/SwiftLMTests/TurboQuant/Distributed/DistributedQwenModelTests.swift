@@ -94,11 +94,30 @@ final class DistributedQwenModelTests: XCTestCase {
         let sidecarData = try Data(contentsOf: sidecarURL)
         let metadata = try ShardMetadata(jsonData: sidecarData)
 
+        let configURL = fixtureRoot.appendingPathComponent("config.json")
+        let config = try DistributedQwenConfiguration.load(from: configURL)
+
+        // Share the materialised embedding table with the model so the
+        // construction matches the path the equivalence tests
+        // exercise. Construction-time wiring is independent of which
+        // init is used; this avoids paying the dequant twice when the
+        // suite runs.
+        let embeddingTable = try materialiseEmbeddingTable(
+            modelDir: fixtureRoot,
+            metadata: metadata,
+            embeddingLayerName: "model.embed_tokens",
+            hiddenSize: config.hiddenSize,
+            vocabSize: config.vocabSize,
+            primaryBits: 4,
+            residualBits: 4
+        )
+
         let group = DistributedGroup()
         let model = try DistributedQwenModel(
             metadata: metadata,
             modelDir: fixtureRoot,
-            group: group
+            group: group,
+            embeddingTable: embeddingTable
         )
 
         // Layer count matches the architecture config.

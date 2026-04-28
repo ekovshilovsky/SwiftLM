@@ -67,6 +67,13 @@ public final class TurboQuantShardedToAllLinear: Module, TurboQuantShardedLayer 
     ///   so rotation / per-block norm semantics factorise cleanly
     ///   across shards.
     /// - `localInFeatures * worldSize == fullInFeatures`.
+    ///
+    /// `worldSize` defaults to `group.size`. Callers that drive shard
+    /// selection from an explicit logical-rank override (e.g.
+    /// in-process construction of multiple rank-local model instances
+    /// against a singleton group) pass the logical world size so the
+    /// preconditions validate against the layout being constructed
+    /// rather than the physical group identity.
     public init(
         fullInFeatures: Int,
         rankOutFeatures: Int,
@@ -81,21 +88,22 @@ public final class TurboQuantShardedToAllLinear: Module, TurboQuantShardedLayer 
         seedPrimary: UInt32,
         seedResidual: UInt32,
         blockSize: Int,
-        group: DistributedGroup
+        group: DistributedGroup,
+        worldSize: Int? = nil
     ) throws {
-        let worldSize = group.size
+        let resolvedWorldSize = worldSize ?? group.size
         precondition(
-            fullInFeatures % (worldSize * blockSize) == 0,
+            fullInFeatures % (resolvedWorldSize * blockSize) == 0,
             "row-parallel TQ sharding requires fullInFeatures divisible " +
             "by worldSize * blockSize; got " +
-            "fullInFeatures=\(fullInFeatures), worldSize=\(worldSize), " +
+            "fullInFeatures=\(fullInFeatures), worldSize=\(resolvedWorldSize), " +
             "blockSize=\(blockSize)"
         )
         precondition(
-            localInFeatures * worldSize == fullInFeatures,
+            localInFeatures * resolvedWorldSize == fullInFeatures,
             "row-parallel localInFeatures must equal " +
             "fullInFeatures / worldSize; got localInFeatures=" +
-            "\(localInFeatures), worldSize=\(worldSize), " +
+            "\(localInFeatures), worldSize=\(resolvedWorldSize), " +
             "fullInFeatures=\(fullInFeatures)"
         )
 

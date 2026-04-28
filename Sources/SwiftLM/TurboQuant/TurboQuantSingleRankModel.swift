@@ -67,11 +67,18 @@ public enum TurboQuantSingleRankModelError: Error, CustomStringConvertible {
     /// `embed_tokens` could not be materialised — typically because
     /// the TQ kernel returned an unexpected shape.
     case embeddingDequantShapeMismatch(expected: [Int], got: [Int])
+    /// The caller supplied an externally-materialised embedding table
+    /// whose shape or dtype does not match the model configuration.
+    case embeddingTableMismatch(expectedShape: [Int], gotShape: [Int],
+                                expectedDType: DType, gotDType: DType)
 
     public var description: String {
         switch self {
         case .embeddingDequantShapeMismatch(let expected, let got):
             return "embed_tokens dequant produced shape \(got); expected \(expected)"
+        case .embeddingTableMismatch(let es, let gs, let ed, let gd):
+            return "supplied embedding table has shape \(gs) dtype \(gd); " +
+                "expected shape \(es) dtype \(ed)"
         }
     }
 }
@@ -193,32 +200,54 @@ public final class TurboQuantSingleRankModel {
         )
     }
 
+    /// Convenience constructor that accepts an externally-materialised
+    /// embedding table so multiple model instances can share a single
+    /// `[vocabSize, hiddenSize]` allocation. The Metal allocator's
+    /// wired-memory ceiling on a single process is the reason this
+    /// matters in practice: hosting more than one model per process
+    /// (e.g. the oracle plus a rank-local distributed model in
+    /// equivalence tests) requires the embedding to be a single
+    /// allocation rather than two.
+    public convenience init(
+        directory: URL,
+        embeddingTable: MLXArray,
+        primaryBits: Int = 4,
+        residualBits: Int = 4
+    ) throws {
+        let configURL = directory.appendingPathComponent("config.json")
+        let config = try DistributedQwenConfiguration.load(from: configURL)
+
+        let sidecarURL = directory.appendingPathComponent("tq_shard_metadata.json")
+        let sidecarData = try Data(contentsOf: sidecarURL)
+        let metadata = try ShardMetadata(jsonData: sidecarData)
+
+        try self.init(
+            config: config,
+            metadata: metadata,
+            modelDir: directory,
+            embeddingTable: embeddingTable,
+            primaryBits: primaryBits,
+            residualBits: residualBits
+        )
+    }
+
     /// Designated initialiser used when the caller has already loaded
     /// the configuration and shard-metadata sidecar (e.g. tests that
     /// validate the metadata in isolation before constructing the
-    /// model).
-    public init(
+    /// model). Materialises the embedding table internally; for
+    /// callers that want to share an already-materialised table across
+    /// multiple model instances, see the `embeddingTable:`-accepting
+    /// initialiser below.
+    public convenience init(
         config: DistributedQwenConfiguration,
         metadata: ShardMetadata,
         modelDir: URL,
         primaryBits: Int = 4,
         residualBits: Int = 4
     ) throws {
-        self.config = config
-        self.primaryBits = primaryBits
-        self.residualBits = residualBits
-
-        // Materialise the embedding table by running the TQ kernel on
-        // the embedding's packed payload with an identity-matrix
-        // input. The materialisation cost (~one TQ matmul of size
-        // H x V plus the V x H allocation) is paid once at
-        // construction; the resulting table is reused by both the
-        // forward-pass embedding lookup and the lm_head matmul when
-        // `tie_word_embeddings` is true. The helper is shared with
-        // `DistributedQwenModel` so both code paths run an identical
-        // dequant.
+        let embeddingTable: MLXArray
         do {
-            self.embeddingTable = try materialiseEmbeddingTable(
+            embeddingTable = try materialiseEmbeddingTable(
                 modelDir: modelDir,
                 metadata: metadata,
                 embeddingLayerName: "model.embed_tokens",
@@ -236,6 +265,46 @@ public final class TurboQuantSingleRankModel {
                 )
             }
         }
+        try self.init(
+            config: config,
+            metadata: metadata,
+            modelDir: modelDir,
+            embeddingTable: embeddingTable,
+            primaryBits: primaryBits,
+            residualBits: residualBits
+        )
+    }
+
+    /// Designated initialiser that accepts an externally-materialised
+    /// embedding table. Validates the supplied table against the
+    /// configuration; constructs the per-block parameters from the
+    /// safetensors files referenced by the sidecar.
+    public init(
+        config: DistributedQwenConfiguration,
+        metadata: ShardMetadata,
+        modelDir: URL,
+        embeddingTable: MLXArray,
+        primaryBits: Int = 4,
+        residualBits: Int = 4
+    ) throws {
+        self.config = config
+        self.primaryBits = primaryBits
+        self.residualBits = residualBits
+
+        // Validate the supplied embedding table against the config.
+        // Catching shape/dtype drift here avoids opaque downstream
+        // failures inside `MLX.take` or the lm_head matmul.
+        let expectedShape = [config.vocabSize, config.hiddenSize]
+        let expectedDType: DType = .float16
+        if embeddingTable.shape != expectedShape || embeddingTable.dtype != expectedDType {
+            throw TurboQuantSingleRankModelError.embeddingTableMismatch(
+                expectedShape: expectedShape,
+                gotShape: embeddingTable.shape,
+                expectedDType: expectedDType,
+                gotDType: embeddingTable.dtype
+            )
+        }
+        self.embeddingTable = embeddingTable
 
         // Final norm scale. Qwen2.5-Coder-3B stores it as bfloat16 in
         // the passthrough file; load it as-is so MLXFast.rmsNorm

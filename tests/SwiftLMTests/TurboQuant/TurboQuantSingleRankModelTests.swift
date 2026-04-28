@@ -133,19 +133,44 @@ final class TurboQuantSingleRankModelTests: XCTestCase {
 
     // MARK: - Test 2: embedding table determinism
 
-    /// Construct two independent models from the same fixture and
-    /// confirm their materialised embedding tables match within
-    /// fp16 noise. Catches non-deterministic dequant behaviour
-    /// (e.g. seed mismatch between runs) and any buffer-aliasing bug
-    /// where the second construction's dequant overwrites the first.
+    /// Construct two independently-materialised embedding tables from
+    /// the same fixture and confirm they match within fp16 noise.
+    /// Catches non-deterministic dequant behaviour (e.g. seed mismatch
+    /// between runs) and any buffer-aliasing bug where the second
+    /// dequant overwrites the first. The test exercises the
+    /// embedding-table materialisation helper directly rather than
+    /// constructing two full models — the dequant is the only piece
+    /// under test, and standing up a second per-block weight stack
+    /// would inflate the test's memory ceiling for no extra coverage.
     func testEmbeddingTableMaterialisationIsStable() throws {
         let fixtureRoot = try resolvedFixtureRoot()
 
-        let modelA = try TurboQuantSingleRankModel(directory: fixtureRoot)
-        let modelB = try TurboQuantSingleRankModel(directory: fixtureRoot)
+        let configURL = fixtureRoot.appendingPathComponent("config.json")
+        let config = try DistributedQwenConfiguration.load(from: configURL)
+        let metadataURL = fixtureRoot.appendingPathComponent("tq_shard_metadata.json")
+        let metadata = try ShardMetadata(jsonData: Data(contentsOf: metadataURL))
 
-        let tableA = modelA.embeddingTable.asType(.float32)
-        let tableB = modelB.embeddingTable.asType(.float32)
+        let tableAArr = try materialiseEmbeddingTable(
+            modelDir: fixtureRoot,
+            metadata: metadata,
+            embeddingLayerName: "model.embed_tokens",
+            hiddenSize: config.hiddenSize,
+            vocabSize: config.vocabSize,
+            primaryBits: 4,
+            residualBits: 4
+        )
+        let tableBArr = try materialiseEmbeddingTable(
+            modelDir: fixtureRoot,
+            metadata: metadata,
+            embeddingLayerName: "model.embed_tokens",
+            hiddenSize: config.hiddenSize,
+            vocabSize: config.vocabSize,
+            primaryBits: 4,
+            residualBits: 4
+        )
+
+        let tableA = tableAArr.asType(.float32)
+        let tableB = tableBArr.asType(.float32)
         MLX.eval(tableA, tableB)
 
         XCTAssertEqual(tableA.shape, tableB.shape,

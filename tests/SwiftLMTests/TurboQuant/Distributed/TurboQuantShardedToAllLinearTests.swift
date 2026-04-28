@@ -94,6 +94,7 @@ final class TurboQuantShardedToAllLinearTests: XCTestCase {
             seedResidual:
             blockSize:
             group:
+            worldSize:
         )
         _ = initRef
 

@@ -226,15 +226,35 @@ final class DecodeEquivalenceTests: XCTestCase {
         let metadataURL = fixtureRoot.appendingPathComponent("tq_shard_metadata.json")
         let metadata = try ShardMetadata(jsonData: Data(contentsOf: metadataURL))
 
+        let configURL = fixtureRoot.appendingPathComponent("config.json")
+        let config = try DistributedQwenConfiguration.load(from: configURL)
+
+        // Share the materialised embedding table across both model
+        // instances; allocating two ~600 MB tables in one process
+        // exceeds the Metal allocator's wired-memory ceiling.
+        let embeddingTable = try materialiseEmbeddingTable(
+            modelDir: fixtureRoot,
+            metadata: metadata,
+            embeddingLayerName: "model.embed_tokens",
+            hiddenSize: config.hiddenSize,
+            vocabSize: config.vocabSize,
+            primaryBits: 4,
+            residualBits: 4
+        )
+
         // `DistributedGroup()` on a singleton process returns rank 0,
         // size 1 — the size-1 equivalence configuration.
         let group = DistributedGroup()
         let dist = try DistributedQwenModel(
             metadata: metadata,
             modelDir: fixtureRoot,
-            group: group
+            group: group,
+            embeddingTable: embeddingTable
         )
-        let ref = try TurboQuantSingleRankModel(directory: fixtureRoot)
+        let ref = try TurboQuantSingleRankModel(
+            directory: fixtureRoot,
+            embeddingTable: embeddingTable
+        )
 
         let logitsRefDecode = runIncrementalDecode(
             prompt: Self.promptTokens,
