@@ -205,6 +205,7 @@ let package = Package(
                 "TurboQuant/Distributed/CoordinatorInferenceSessionTests.swift",
                 "TurboQuant/Distributed/JoinerInferenceWorkerTests.swift",
                 "TurboQuant/Distributed/DistributedSamplerTests.swift",
+                "TurboQuant/Distributed/DistributedInferenceEngineTests.swift",
                 "TurboQuant/Distributed/DecodeEquivalenceTests.swift",
                 "TurboQuant/TurboQuantSingleRankModelTests.swift",
                 "TurboQuant/Integration/TurboQuantServingTests.swift",
