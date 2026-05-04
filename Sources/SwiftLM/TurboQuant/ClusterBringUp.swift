@@ -185,7 +185,13 @@ public func startCluster(
     rdma: RdmaCapability = .unsupported,
     discoveryTimeoutSeconds: Double = defaultClusterJoinerDiscoveryTimeoutSeconds
 ) async throws -> ClusterBringUp {
-    let role = try resolveDistributedRole(options: options)
+    // Non-auto roles are decided before the BonjourService spins up so
+    // the early-validation error path stays straightforward. Auto-mode
+    // defers role decision until after the manager exists, because the
+    // discovery browse runs through `manager.listPeers()`.
+    let preResolvedRole: DistributedNodeRole? = options.isAuto
+        ? nil
+        : try resolveDistributedRole(options: options)
 
     // Discovery info advertised on the wire prior to cluster formation.
     // The coordinator overwrites the role + cluster fields inside
@@ -212,6 +218,30 @@ public func startCluster(
         version: version,
         rdma: rdma
     )
+
+    // Auto-mode resolves the role by browsing for a coordinator whose
+    // advertised hash matches what we can derive from our passphrase
+    // and the peer's clusterId. Match → become a joiner against that
+    // peer. No match within the browse window → become a coordinator
+    // and create a new cluster. The browser started here stays up, so
+    // the .secondary branch below can reuse the matched peer directly
+    // without re-discovery.
+    let role: DistributedNodeRole
+    let autoMatchedPeer: DiscoveredPeer?
+    if let resolved = preResolvedRole {
+        role = resolved
+        autoMatchedPeer = nil
+    } else {
+        let outcome = await resolveAutoMatchingPeer(
+            passphrase: passphrase,
+            modelId: modelId,
+            version: version,
+            manager: manager,
+            timeout: defaultAutoBrowseTimeoutSeconds
+        )
+        role = outcome.role
+        autoMatchedPeer = outcome.matchedPeer
+    }
 
     switch role {
     case .primary:
@@ -271,10 +301,22 @@ public func startCluster(
             await manager.stop()
             throw error
         }
-        let peer = try await discoverCoordinatorPeer(
-            via: manager,
-            timeoutSeconds: discoveryTimeoutSeconds
-        )
+        // Auto-mode already located and cryptographically matched the
+        // coordinator peer. The explicit-role path runs the standard
+        // discovery loop, which only filters by `role == .coordinator`
+        // — fine because that path runs against a fresh
+        // BonjourService whose `localClusterHash` will be set after
+        // the handshake completes. Both paths converge on
+        // `joinCluster` with the resolved peer.
+        let peer: DiscoveredPeer
+        if let matched = autoMatchedPeer {
+            peer = matched
+        } else {
+            peer = try await discoverCoordinatorPeer(
+                via: manager,
+                timeoutSeconds: discoveryTimeoutSeconds
+            )
+        }
         _ = try await manager.joinCluster(passphrase: passphrase, peer: peer)
 
         // The joiner participates in inference only when a rank-local
@@ -306,10 +348,15 @@ public func tearDownCluster(_ bringUp: ClusterBringUp?) async {
     await bringUp.manager.stop()
 }
 
-/// Resolve the role flag set into a concrete `DistributedNodeRole`.
-/// `--auto` is reserved for the keystore-driven discovery path, which
-/// is not implemented here yet — callers must pass an explicit role
-/// override until that work lands.
+/// Default browse window for `--auto` role resolution. Three seconds is
+/// enough for mDNS to converge on a quiet LAN; networks with slow
+/// multicast may need a flag override in a future revision.
+public let defaultAutoBrowseTimeoutSeconds: Double = 3.0
+
+/// Resolve a non-auto role flag set into a concrete `DistributedNodeRole`.
+/// Auto-mode is handled by `resolveAutoMatchingPeer` and never enters
+/// this path — keeping the two flows separate makes the explicit-role
+/// branch trivial to reason about.
 private func resolveDistributedRole(
     options: DistributedCLIOptions
 ) throws -> DistributedNodeRole {
@@ -317,14 +364,102 @@ private func resolveDistributedRole(
         return explicit
     }
     if options.isAuto {
-        // Sketch of the future implementation: load a record from the
-        // configured key store; if present, attempt to join the same
-        // cluster (secondary); if absent, create a new one (primary).
-        // Deferred so this layer lands without conflating bring-up
-        // wiring with the auto-mode keystore semantics.
+        // Defensive: callers should funnel auto-mode through
+        // `resolveAutoMatchingPeer`. Reaching here means a regression in
+        // the call site rather than a missing implementation.
         throw ClusterBringUpError.autoRoleNotImplemented
     }
     throw ClusterBringUpError.missingRole
+}
+
+/// Determine whether a discovered peer belongs to the same cluster as
+/// the local node by re-deriving the peer's expected discovery hash
+/// from the local passphrase and the peer's advertised cluster ID. The
+/// match is cryptographic: only a node holding the same passphrase as
+/// the coordinator can produce the matching hash, so a positive match
+/// proves the two nodes will succeed at the subsequent handshake.
+///
+/// Returns `nil` when any of the following holds:
+///   - the peer is not a coordinator;
+///   - the peer's advertised model or version does not match local;
+///   - the peer omitted `clusterId` from its TXT record;
+///   - the peer's `clusterId` is not a valid UUID;
+///   - the locally derived discovery hash does not match the peer's
+///     advertised `clusterHash`.
+///
+/// Returns the peer unchanged when all checks pass. Splitting this
+/// function out lets the auto-mode discovery loop run lazily — each
+/// peer's Argon2id derivation cost (~100ms) is paid once per peer
+/// arrival rather than eagerly across the whole result set.
+internal func matchAutoModePeer(
+    _ peer: DiscoveredPeer,
+    passphrase: String,
+    modelId: String,
+    version: String
+) -> DiscoveredPeer? {
+    let info = peer.info
+    guard info.role == .coordinator else { return nil }
+    guard info.isCompatible(with: modelId, version: version) else { return nil }
+    guard let clusterIdString = info.clusterId,
+          let uuid = UUID(uuidString: clusterIdString) else { return nil }
+    var bytes = uuid.uuid
+    let uuidBytes = withUnsafeBytes(of: &bytes) { Data($0) }
+    let handshakeKey = ClusterAuth.deriveHandshakeKey(
+        passphrase: passphrase, salt: uuidBytes
+    )
+    let expectedHash = ClusterAuth.deriveDiscoveryHash(master: handshakeKey)
+    guard expectedHash == info.clusterHash else { return nil }
+    return peer
+}
+
+/// Browse for a coordinator that matches the local passphrase, model,
+/// and version. Returns `(.secondary, peer)` if a matching coordinator
+/// surfaces within the timeout, else `(.primary, nil)` so the caller
+/// proceeds to create a new cluster instead.
+///
+/// The function consumes `manager.listPeers()`, which lazily starts the
+/// underlying NWBrowser if it is not already running. The browser stays
+/// up after the function returns, so the secondary path can reuse the
+/// matched peer directly without paying for a re-discovery.
+private func resolveAutoMatchingPeer(
+    passphrase: String,
+    modelId: String,
+    version: String,
+    manager: ClusterManager,
+    timeout: Double
+) async -> (role: DistributedNodeRole, matchedPeer: DiscoveredPeer?) {
+    let stream = manager.listPeers()
+
+    let matched = await withTaskGroup(of: DiscoveredPeer?.self) { group in
+        // Watcher: scan peers as they arrive, return the first one whose
+        // passphrase-derived hash matches its advertised value.
+        group.addTask {
+            for await peer in stream {
+                if let match = matchAutoModePeer(
+                    peer, passphrase: passphrase,
+                    modelId: modelId, version: version
+                ) {
+                    return match
+                }
+            }
+            return nil
+        }
+        // Timer: bound the browse window so a network with no peers
+        // resolves to "create" rather than hanging the operator
+        // indefinitely.
+        group.addTask {
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            return nil
+        }
+        let first = await group.next() ?? nil
+        group.cancelAll()
+        return first
+    }
+
+    if let peer = matched {
+        return (.secondary, peer)
+    }
+    return (.primary, nil)
 }
 
 /// Wait for the first peer surfaced by the manager's Bonjour browser
