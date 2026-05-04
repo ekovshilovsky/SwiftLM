@@ -229,6 +229,70 @@ SwiftLM --port 8002 \
 
 ---
 
+## 🌐 TurboQuant Distributed Mode (`--distributed`)
+
+Run inference across multiple Macs on the same LAN. Nodes find each other via Bonjour, authenticate with a shared passphrase, and form a tensor-parallel cluster. The `--distributed` path is a forward-looking superset of the legacy hostfile-based `--tq-distributed` flag and is the recommended option for new deployments.
+
+> [!IMPORTANT]
+> **v1 scope:** the cluster forms end-to-end, advertises on Bonjour, and authenticates over a mutually authenticated channel. The coordinator continues to serve single-node inference while accepting joiners; cross-machine forward-pass execution lands in a follow-up. Use `--distributed` today to validate cluster formation and topology; treat single-node generation as the production path until the multi-rank inference work ships.
+
+### Quickstart — explicit roles
+
+Start the coordinator on one Mac:
+
+```bash
+SwiftLM --port 8002 \
+  --model <path>/Qwen2.5-Coder-7B-TQ8-TP2 \
+  --distributed --role primary \
+  --passphrase-file ~/cluster.passphrase
+```
+
+Start a joiner on another Mac (same LAN, same passphrase, same model):
+
+```bash
+SwiftLM --port 8003 \
+  --model <path>/Qwen2.5-Coder-7B-TQ8-TP2 \
+  --distributed --role secondary \
+  --passphrase-file ~/cluster.passphrase
+```
+
+### Quickstart — auto role selection
+
+`--auto` browses the LAN for an existing coordinator that holds the same passphrase, and either joins it or creates a new cluster if no match is found:
+
+```bash
+SwiftLM --port 8002 \
+  --model <path>/Qwen2.5-Coder-7B-TQ8-TP2 \
+  --distributed --auto \
+  --passphrase-file ~/cluster.passphrase
+```
+
+The browse window is 3 seconds. Two `--auto` nodes started simultaneously with no prior coordinator both time out and both create separate clusters; the workaround for now is to start the intended coordinator first, wait for `[SwiftLM] ✅ Ready`, then start the joiner.
+
+### Passphrase sources
+
+Five sources are accepted, in priority order. The first three CLI flags are mutually exclusive at parser time:
+
+| Source | When to use |
+|---|---|
+| `--passphrase <value>` | Quick experiments. Visible in `ps` and shell history; avoid for production. |
+| `--passphrase-file <path>` | Production. The file is read as UTF-8 with a trailing newline trimmed; restrict file permissions to `0600`. |
+| `--passphrase-command <cmd>` | Integrations with external secret stores (e.g. `op read op://Vault/cluster/passphrase`, `vault kv get -field=passphrase secret/cluster`). The command is run via `/bin/sh -c`. |
+| `SWIFTLM_CLUSTER_PASSPHRASE` env var | Legacy programmatic path; retained for existing automation. |
+| Interactive prompt | Falls through when no flag and no env var are supplied and stdin is a TTY. Echo is suppressed via `readpassphrase(3)`. |
+
+The minimum passphrase length is 8 characters; the resolver rejects shorter values with a precise error. Empty input from any source is rejected with a separate error so operators are not misled into thinking the passphrase was too short.
+
+### Inspecting cluster state
+
+```bash
+SwiftLM --cluster-status   # prints persisted cluster record and exits
+```
+
+This is read-only and does not require `--distributed` or model loading.
+
+---
+
 ## 🔀 Why We Forked Apple MLX
 
 To achieve the extreme memory efficiency and speeds seen in **SSD Expert Streaming** and **Speculative Decoding**, `SwiftLM` relies on custom C++ primitives that bypass standard unified memory limits.
