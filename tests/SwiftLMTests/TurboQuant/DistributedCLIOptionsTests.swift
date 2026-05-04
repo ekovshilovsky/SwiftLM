@@ -102,4 +102,71 @@ final class DistributedCLIOptionsTests: XCTestCase {
             try DistributedCLIOptions.parseRole("Primary")
         )
     }
+
+    // MARK: - Passphrase flags
+
+    func testPassphraseRequiresDistributed() {
+        XCTAssertThrowsError(
+            try DistributedCLIOptions(passphrase: "x").validate()
+        ) { err in
+            XCTAssertEqual(
+                err as? DistributedCLIOptionsError,
+                .passphraseFlagRequiresDistributed("--passphrase")
+            )
+        }
+    }
+
+    func testPassphraseFileRequiresDistributed() {
+        XCTAssertThrowsError(
+            try DistributedCLIOptions(passphraseFile: "/tmp/x").validate()
+        ) { err in
+            XCTAssertEqual(
+                err as? DistributedCLIOptionsError,
+                .passphraseFlagRequiresDistributed("--passphrase-file")
+            )
+        }
+    }
+
+    func testPassphraseCommandRequiresDistributed() {
+        XCTAssertThrowsError(
+            try DistributedCLIOptions(passphraseCommand: "echo x").validate()
+        ) { err in
+            XCTAssertEqual(
+                err as? DistributedCLIOptionsError,
+                .passphraseFlagRequiresDistributed("--passphrase-command")
+            )
+        }
+    }
+
+    /// Specifying any two of the three passphrase sources is a fatal
+    /// error caught at validation time so the resolver downstream can
+    /// assume at most one is set.
+    func testMultiplePassphraseSourcesRejected() {
+        XCTAssertThrowsError(
+            try DistributedCLIOptions(
+                isDistributed: true,
+                passphrase: "x",
+                passphraseFile: "/tmp/x"
+            ).validate()
+        ) { err in
+            guard case .multiplePassphraseSources(let names) =
+                    err as? DistributedCLIOptionsError else {
+                XCTFail("expected multiplePassphraseSources, got \(err)")
+                return
+            }
+            XCTAssertEqual(names, ["--passphrase", "--passphrase-file"])
+        }
+    }
+
+    func testSinglePassphraseSourceWithDistributedIsValid() throws {
+        try DistributedCLIOptions(
+            isDistributed: true, passphrase: "correct-horse"
+        ).validate()
+        try DistributedCLIOptions(
+            isDistributed: true, passphraseFile: "/tmp/x"
+        ).validate()
+        try DistributedCLIOptions(
+            isDistributed: true, passphraseCommand: "echo x"
+        ).validate()
+    }
 }

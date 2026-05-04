@@ -190,6 +190,7 @@ let package = Package(
                 "TurboQuant/InMemoryClusterKeyStoreTests.swift",
                 "TurboQuant/TestPipe.swift",
                 "TurboQuant/DistributedCLIOptionsTests.swift",
+                "TurboQuant/PassphraseResolverTests.swift",
                 "TurboQuant/TopologyReporterTests.swift",
                 "TurboQuant/Distributed/ShardAwareSafetensorsReaderTests.swift",
                 "TurboQuant/Distributed/ShardMetadataTests.swift",

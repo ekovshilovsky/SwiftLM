@@ -330,6 +330,15 @@ struct MLXServer: AsyncParsableCommand {
     @Flag(name: .long, help: "Print the loaded model's layer type breakdown and exit.")
     var layerTypeReport: Bool = false
 
+    @Option(name: .long, help: "Cluster passphrase as a literal string. Mutually exclusive with --passphrase-file and --passphrase-command. Note: visible in ps/shell history; prefer --passphrase-file or --passphrase-command for production.")
+    var passphrase: String?
+
+    @Option(name: .long, help: "Path to a file containing the cluster passphrase. The file is read as UTF-8 with a trailing newline trimmed. Mutually exclusive with --passphrase and --passphrase-command.")
+    var passphraseFile: String?
+
+    @Option(name: .long, help: "Shell command whose stdout supplies the cluster passphrase (run via /bin/sh -c). A trailing newline is trimmed. Mutually exclusive with --passphrase and --passphrase-file.")
+    var passphraseCommand: String?
+
     mutating func run() async throws {
         // ── Distributed-mode CLI validation ──
         // Parse and validate the v1 distributed flags before any heavy
@@ -344,7 +353,10 @@ struct MLXServer: AsyncParsableCommand {
                 role: try DistributedCLIOptions.parseRole(role),
                 snapshotInterval: snapshotInterval,
                 printClusterStatus: clusterStatus,
-                printLayerTypeReport: layerTypeReport
+                printLayerTypeReport: layerTypeReport,
+                passphrase: passphrase,
+                passphraseFile: passphraseFile,
+                passphraseCommand: passphraseCommand
             )
             try distributedOptions.validate()
         } catch let err as DistributedCLIOptionsError {
@@ -360,30 +372,46 @@ struct MLXServer: AsyncParsableCommand {
             return
         }
 
-        // --distributed cluster bring-up is gated on the user supplying
-        // a passphrase via the `SWIFTLM_CLUSTER_PASSPHRASE` environment
-        // variable. The env-var path is preferred over a CLI flag so the
-        // passphrase does not surface in `ps` listings or shell history.
-        // Other delivery mechanisms (CLI flag, file path) are intentional
-        // future work; surface a precise error rather than silently
-        // refusing or prompting interactively.
+        // --distributed cluster bring-up resolves the passphrase from one
+        // of five sources, in priority order:
+        //   1. --passphrase
+        //   2. --passphrase-file
+        //   3. --passphrase-command
+        //   4. SWIFTLM_CLUSTER_PASSPHRASE env var (legacy programmatic path)
+        //   5. interactive TTY prompt (when stdin is a terminal)
+        // Sources 1-3 are mutually exclusive at the parser level; the
+        // legacy env-var fallback was the only supported path before
+        // Task 12c shipped and is retained for existing automation
+        // scripts. The interactive prompt covers the operator-at-keyboard
+        // case where no flag and no env var were supplied.
         let clusterPassphrase: String?
         if distributedOptions.isDistributed {
-            guard
-                let raw = ProcessInfo.processInfo.environment["SWIFTLM_CLUSTER_PASSPHRASE"],
-                !raw.isEmpty
-            else {
-                print(
-                    """
-                    [SwiftLM] --distributed requires the cluster passphrase to be \
-                    provided via the SWIFTLM_CLUSTER_PASSPHRASE environment variable. \
-                    Set the variable and retry; the CLI does not currently accept \
-                    the passphrase as a flag or via a prompt.
-                    """
+            // Materialize the env-var legacy path as a synthetic
+            // --passphrase value when no flag is set, so the resolver's
+            // mutual-exclusion check is the single source of truth.
+            let envPassphrase = ProcessInfo.processInfo
+                .environment["SWIFTLM_CLUSTER_PASSPHRASE"]
+                .flatMap { $0.isEmpty ? nil : $0 }
+            let directOrEnv = passphrase ?? (
+                passphraseFile == nil && passphraseCommand == nil
+                    ? envPassphrase : nil
+            )
+
+            do {
+                let resolved = try resolvePassphrase(
+                    direct: directOrEnv,
+                    file: passphraseFile.map { URL(fileURLWithPath: $0) },
+                    command: passphraseCommand,
+                    isStdinTTY: isatty(fileno(stdin)) != 0,
+                    readInteractive: defaultReadInteractivePassphrase,
+                    readFile: defaultReadPassphraseFile,
+                    runCommand: defaultRunPassphraseCommand
                 )
+                clusterPassphrase = resolved
+            } catch let err as PassphraseResolutionError {
+                print("[SwiftLM] error: \(err)")
                 throw ExitCode(EX_USAGE)
             }
-            clusterPassphrase = raw
         } else {
             clusterPassphrase = nil
         }

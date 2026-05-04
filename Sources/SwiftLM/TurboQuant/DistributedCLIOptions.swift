@@ -34,19 +34,36 @@ public struct DistributedCLIOptions: Sendable, Equatable {
     public let printClusterStatus: Bool
     /// Print the loaded model's layer type breakdown and exit.
     public let printLayerTypeReport: Bool
+    /// Direct cluster passphrase via `--passphrase <value>`. Mutually
+    /// exclusive with `passphraseFile` and `passphraseCommand`.
+    public let passphrase: String?
+    /// Path to a file containing the cluster passphrase via
+    /// `--passphrase-file <path>`. Mutually exclusive with `passphrase`
+    /// and `passphraseCommand`.
+    public let passphraseFile: String?
+    /// Shell command to execute and capture stdout for the cluster
+    /// passphrase via `--passphrase-command <cmd>`. Mutually exclusive
+    /// with `passphrase` and `passphraseFile`.
+    public let passphraseCommand: String?
 
     public init(isDistributed: Bool = false,
                 isAuto: Bool = false,
                 role: DistributedNodeRole? = nil,
                 snapshotInterval: Int? = nil,
                 printClusterStatus: Bool = false,
-                printLayerTypeReport: Bool = false) {
+                printLayerTypeReport: Bool = false,
+                passphrase: String? = nil,
+                passphraseFile: String? = nil,
+                passphraseCommand: String? = nil) {
         self.isDistributed = isDistributed
         self.isAuto = isAuto
         self.role = role
         self.snapshotInterval = snapshotInterval
         self.printClusterStatus = printClusterStatus
         self.printLayerTypeReport = printLayerTypeReport
+        self.passphrase = passphrase
+        self.passphraseFile = passphraseFile
+        self.passphraseCommand = passphraseCommand
     }
 }
 
@@ -56,6 +73,8 @@ public enum DistributedCLIOptionsError: Error, Equatable, CustomStringConvertibl
     case snapshotIntervalRequiresDistributed
     case snapshotIntervalOutOfRange(Int)
     case invalidRole(String)
+    case passphraseFlagRequiresDistributed(String)
+    case multiplePassphraseSources([String])
 
     public var description: String {
         switch self {
@@ -69,6 +88,10 @@ public enum DistributedCLIOptionsError: Error, Equatable, CustomStringConvertibl
             return "--snapshot-interval must be a positive integer (got \(value))"
         case .invalidRole(let value):
             return "--role must be 'primary' or 'secondary' (got '\(value)')"
+        case .passphraseFlagRequiresDistributed(let flag):
+            return "\(flag) requires --distributed"
+        case .multiplePassphraseSources(let names):
+            return "multiple passphrase sources specified: \(names.joined(separator: ", ")). Use exactly one of --passphrase, --passphrase-file, --passphrase-command."
         }
     }
 }
@@ -91,6 +114,34 @@ extension DistributedCLIOptions {
             if interval <= 0 {
                 throw DistributedCLIOptionsError.snapshotIntervalOutOfRange(interval)
             }
+        }
+        // Passphrase flags only make sense alongside --distributed
+        // because they configure cluster authentication. Reject early
+        // to avoid leaving an operator wondering why the value is
+        // ignored.
+        if !isDistributed {
+            if passphrase != nil {
+                throw DistributedCLIOptionsError
+                    .passphraseFlagRequiresDistributed("--passphrase")
+            }
+            if passphraseFile != nil {
+                throw DistributedCLIOptionsError
+                    .passphraseFlagRequiresDistributed("--passphrase-file")
+            }
+            if passphraseCommand != nil {
+                throw DistributedCLIOptionsError
+                    .passphraseFlagRequiresDistributed("--passphrase-command")
+            }
+        }
+        // The three passphrase sources are mutually exclusive. Catching
+        // the conflict here lets the resolver assume at most one source
+        // is set, simplifying its decision tree.
+        var specified: [String] = []
+        if passphrase != nil { specified.append("--passphrase") }
+        if passphraseFile != nil { specified.append("--passphrase-file") }
+        if passphraseCommand != nil { specified.append("--passphrase-command") }
+        if specified.count > 1 {
+            throw DistributedCLIOptionsError.multiplePassphraseSources(specified)
         }
     }
 
