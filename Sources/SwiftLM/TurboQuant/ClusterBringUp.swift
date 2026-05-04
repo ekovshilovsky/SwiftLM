@@ -178,6 +178,7 @@ public func startCluster(
         BonjourService(info: info, localClusterHash: nil)
     },
     joinerModelBuilder: JoinerModelBuilder = defaultJoinerModelBuilder,
+    coordinatorModelBuilder: CoordinatorModelBuilder = defaultCoordinatorModelBuilder,
     hostname: String = ProcessInfo.processInfo.hostName,
     memoryGB: Int = Int(ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)),
     version: String = defaultSwiftlmClusterVersion,
@@ -223,7 +224,40 @@ public func startCluster(
             passphrase: passphrase,
             clusterName: nil
         )
-        return ClusterBringUp(manager: manager, role: .primary, workerTask: nil)
+
+        // The coordinator-side `DistributedQwenModel` is only
+        // constructed when the supplied snapshot is TurboQuant-
+        // converted. Non-TQ snapshots return nil from the builder so
+        // the coordinator continues to advertise as a cluster head
+        // while the chat-completions handler falls through to the
+        // existing single-node generation path. Holding both the
+        // standard `ModelContainer` and a coordinator
+        // `DistributedQwenModel` in one process roughly doubles the
+        // resident model footprint while the distributed branch is
+        // active; a tokenizer-only loader on the upstream model side
+        // would close that gap.
+        let coordinatorModel: DistributedQwenModel?
+        do {
+            coordinatorModel = try coordinatorModelBuilder(modelDirectory)
+            if coordinatorModel == nil {
+                FileHandle.standardError.write(Data((
+                    "[SwiftLM] --distributed --primary supplied a snapshot " +
+                    "without a tq_shard_metadata.json sidecar; the " +
+                    "coordinator will accept joiners but chat completions " +
+                    "will use the single-node generation path until a " +
+                    "TurboQuant-converted snapshot is provided.\n"
+                ).utf8))
+            }
+        } catch {
+            await manager.stop()
+            throw error
+        }
+        return ClusterBringUp(
+            manager: manager,
+            role: .primary,
+            workerTask: nil,
+            coordinatorModel: coordinatorModel
+        )
 
     case .secondary:
         // Start the joiner's BonjourService so its NWBrowser is live
