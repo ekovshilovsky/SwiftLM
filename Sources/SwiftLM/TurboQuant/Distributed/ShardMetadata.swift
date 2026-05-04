@@ -1,9 +1,12 @@
 // Decoded `tq_shard_metadata.json` document. Emitted by tq-convert and
 // tq-emit-sidecar in the TurboQuant core repo; consumed here by the
 // shard-aware weight loader. The sidecar format is versioned; this
-// decoder handles format_version 1. Format and semantics are
-// documented in specs/2026-04-21-distributed-inference-impl-design.md
-// §6 and in turboquant-mlx-core/docs/conversion.md.
+// decoder reads format_version 1 (the original layout) and 2, which
+// adds a top-level `max_supported_world_size` field surfacing the
+// largest tensor-parallel world size the snapshot was converted for.
+// Format and semantics are documented in
+// specs/2026-04-21-distributed-inference-impl-design.md §6 and in
+// turboquant-mlx-core/docs/conversion.md.
 
 import Foundation
 
@@ -48,6 +51,12 @@ public struct ShardMetadata: Sendable {
     public let intermediateSize: Int?
     public let numExperts: Int?
     public let topK: Int?
+    /// Largest tensor-parallel world size the snapshot was converted for.
+    /// `nil` for format_version 1 sidecars (pre-dates the field); for
+    /// format_version 2 sidecars it reflects the `--target-world-size`
+    /// the operator passed to tq-convert. Cluster bring-up surfaces a
+    /// clean error when a runtime cluster's world size exceeds this.
+    public let maxSupportedWorldSize: Int?
     public let tensors: [String: ShardTensorEntry]
 
     public init(jsonData: Data) throws {
@@ -60,6 +69,7 @@ public struct ShardMetadata: Sendable {
         intermediateSize = raw.intermediateSize
         numExperts = raw.numExperts
         topK = raw.topK
+        maxSupportedWorldSize = raw.maxSupportedWorldSize
         tensors = try raw.tensors.mapValues { try $0.intoEntry() }
     }
 }
@@ -83,6 +93,7 @@ private struct RawShardMetadata: Decodable {
     let intermediateSize: Int?
     let numExperts: Int?
     let topK: Int?
+    let maxSupportedWorldSize: Int?
     let tensors: [String: RawTensorEntry]
 
     enum CodingKeys: String, CodingKey {
@@ -93,6 +104,7 @@ private struct RawShardMetadata: Decodable {
         case intermediateSize = "intermediate_size"
         case numExperts = "num_experts"
         case topK = "top_k"
+        case maxSupportedWorldSize = "max_supported_world_size"
         case tensors
     }
 }
