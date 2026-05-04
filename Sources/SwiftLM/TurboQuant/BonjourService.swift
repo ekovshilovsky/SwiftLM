@@ -154,6 +154,17 @@ public final class BonjourService: @unchecked Sendable {
         return try await awaitReadyPort()
     }
 
+    /// Idempotently bring up the NWBrowser without starting the
+    /// listener. Used by `--auto` cluster bring-up so the node can
+    /// browse for an existing coordinator before deciding whether to
+    /// advertise itself. Subsequent calls (including the implicit one
+    /// inside `start()`) are no-ops once the browser is running.
+    public func ensureBrowsing() {
+        let alreadyRunning: Bool = stateQueue.sync { browser != nil }
+        if alreadyRunning { return }
+        startBrowser()
+    }
+
     /// Stop advertising, cancel the browser, and terminate all
     /// outstanding `peers()` streams. Safe to call more than once.
     public func stop() {
@@ -361,16 +372,23 @@ public final class BonjourService: @unchecked Sendable {
     // MARK: - Browser
 
     private func startBrowser() {
+        // Idempotent: a prior `ensureBrowsing()` call from the auto-mode
+        // bring-up path may already have started the browser. The
+        // listener-advertise side of `start()` still runs in that case —
+        // we just skip the second NWBrowser instantiation here.
+        let alreadyRunning: Bool = stateQueue.sync { self.browser != nil }
+        if alreadyRunning { return }
+
         let descriptor = NWBrowser.Descriptor.bonjourWithTXTRecord(
             type: Self.serviceType,
             domain: nil
         )
-        let browser = NWBrowser(for: descriptor, using: .tcp)
-        browser.browseResultsChangedHandler = { [weak self] results, _ in
+        let newBrowser = NWBrowser(for: descriptor, using: .tcp)
+        newBrowser.browseResultsChangedHandler = { [weak self] results, _ in
             guard let self else { return }
             self.handleBrowseResults(results)
         }
-        browser.stateUpdateHandler = { [weak self] state in
+        newBrowser.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             if case .failed = state {
                 // Browser failure is not fatal to the listener —
@@ -386,9 +404,9 @@ public final class BonjourService: @unchecked Sendable {
         }
 
         stateQueue.sync {
-            self.browser = browser
+            self.browser = newBrowser
         }
-        browser.start(queue: stateQueue)
+        newBrowser.start(queue: stateQueue)
     }
 
     private func handleBrowseResults(_ results: Set<NWBrowser.Result>) {

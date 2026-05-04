@@ -183,7 +183,8 @@ public func startCluster(
     memoryGB: Int = Int(ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)),
     version: String = defaultSwiftlmClusterVersion,
     rdma: RdmaCapability = .unsupported,
-    discoveryTimeoutSeconds: Double = defaultClusterJoinerDiscoveryTimeoutSeconds
+    discoveryTimeoutSeconds: Double = defaultClusterJoinerDiscoveryTimeoutSeconds,
+    autoBrowseTimeoutSeconds: Double = defaultAutoBrowseTimeoutSeconds
 ) async throws -> ClusterBringUp {
     // Non-auto roles are decided before the BonjourService spins up so
     // the early-validation error path stays straightforward. Auto-mode
@@ -232,12 +233,21 @@ public func startCluster(
         role = resolved
         autoMatchedPeer = nil
     } else {
+        // The auto-mode browse runs through `manager.listPeers()`, which
+        // needs the underlying NWBrowser to be live. Neither the
+        // primary-side `createCluster` nor the secondary-side explicit
+        // `bonjour.start()` has run yet at this point, so we ask the
+        // BonjourService to bring up its browser independently. The
+        // listener side of `start()` is intentionally not invoked here;
+        // it is the role-specific path that decides whether to begin
+        // advertising.
+        bonjour.ensureBrowsing()
         let outcome = await resolveAutoMatchingPeer(
             passphrase: passphrase,
             modelId: modelId,
             version: version,
             manager: manager,
-            timeout: defaultAutoBrowseTimeoutSeconds
+            timeout: autoBrowseTimeoutSeconds
         )
         role = outcome.role
         autoMatchedPeer = outcome.matchedPeer

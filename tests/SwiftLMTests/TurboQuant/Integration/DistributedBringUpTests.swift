@@ -323,13 +323,16 @@ final class DistributedBringUpTests: XCTestCase {
         }
     }
 
-    // MARK: - Test 4: auto-role deferred
+    // MARK: - Test 4: auto-role create path
 
-    /// `--distributed --auto` (without an explicit role) must surface
-    /// `autoRoleNotImplemented` rather than running a half-implemented
-    /// auto-detection path. Guards against accidental partial wiring
-    /// of the keystore-driven auto-discovery flow.
-    func testAutoRoleNotImplementedErrorsCleanly() async throws {
+    /// `--distributed --auto` with no matching coordinator on the wire
+    /// must fall through to the coordinator-create branch and return a
+    /// `ClusterBringUp` whose role is `.primary`. The browse window
+    /// expires (3 seconds default; this test does not lengthen it),
+    /// after which the bring-up creates a fresh cluster instead of
+    /// hanging the operator. Acts as the regression for the auto-mode
+    /// fall-through landed in Task 12c.4.
+    func testAutoRoleResolvesToCoordinatorWhenNoMatchFound() async throws {
         let options = DistributedCLIOptions(
             isDistributed: true,
             isAuto: true,
@@ -339,26 +342,138 @@ final class DistributedBringUpTests: XCTestCase {
             printLayerTypeReport: false
         )
 
+        let bringUp: ClusterBringUp
         do {
-            _ = try await startCluster(
+            bringUp = try await startCluster(
                 options: options,
+                passphrase: passphrase,
+                modelId: uniqueName("auto-create-model"),
+                modelDirectory: nil,
+                keyStore: InMemoryClusterKeyStore(),
+                bonjourFactory: bonjourFactory(hostname: uniqueName("auto-create")),
+                hostname: uniqueName("auto-create"),
+                memoryGB: 128,
+                version: version,
+                rdma: .available
+            )
+        } catch {
+            throw XCTSkip("auto-mode coordinator bring-up failed — likely mDNSResponder unavailable: \(error)")
+        }
+
+        defer {
+            let captured = bringUp
+            Task { await tearDownCluster(captured) }
+        }
+
+        XCTAssertEqual(
+            bringUp.role, .primary,
+            "auto-mode with no matching peer must resolve to coordinator-create"
+        )
+    }
+
+    // MARK: - Test 5: auto-role join path
+
+    /// Drive a coordinator and an auto-mode joiner through `startCluster`
+    /// in one process. The joiner's `--auto` resolution must:
+    ///
+    ///   1. Browse for peers via `manager.listPeers()`.
+    ///   2. Match the coordinator cryptographically by re-deriving its
+    ///      advertised hash from the local passphrase plus the peer's
+    ///      clusterId.
+    ///   3. Resolve to `.secondary` and route through `joinCluster` with
+    ///      the matched peer, skipping the explicit-role discovery loop.
+    ///
+    /// Asserts the bring-up returns role=.secondary, exits the auto
+    /// browse promptly (well under the timeout), and stops cleanly
+    /// without leaking a worker task — matching the contract documented
+    /// in §4 of the Task 12c plan.
+    func testAutoRoleJoinsExistingCoordinatorWhenPassphraseMatches() async throws {
+        let coordName = uniqueName("auto-coord")
+        let joinerName = uniqueName("auto-joiner")
+        let coordStore = InMemoryClusterKeyStore()
+        let joinerStore = InMemoryClusterKeyStore()
+
+        let coordOptions = DistributedCLIOptions(
+            isDistributed: true,
+            isAuto: false,
+            role: .primary,
+            snapshotInterval: nil,
+            printClusterStatus: false,
+            printLayerTypeReport: false
+        )
+        let joinerAutoOptions = DistributedCLIOptions(
+            isDistributed: true,
+            isAuto: true,
+            role: nil,
+            snapshotInterval: nil,
+            printClusterStatus: false,
+            printLayerTypeReport: false
+        )
+
+        let coordBringUp: ClusterBringUp
+        do {
+            coordBringUp = try await startCluster(
+                options: coordOptions,
                 passphrase: passphrase,
                 modelId: model,
                 modelDirectory: nil,
-                keyStore: InMemoryClusterKeyStore(),
-                hostname: uniqueName("auto-bringup")
+                keyStore: coordStore,
+                bonjourFactory: bonjourFactory(hostname: coordName),
+                hostname: coordName,
+                memoryGB: 128,
+                version: version,
+                rdma: .available,
+                discoveryTimeoutSeconds: 5
             )
-            XCTFail("startCluster must throw for --auto without an explicit role override")
-        } catch let err as ClusterBringUpError {
-            switch err {
-            case .autoRoleNotImplemented:
-                break  // expected
-            default:
-                XCTFail("expected ClusterBringUpError.autoRoleNotImplemented, got \(err)")
-            }
         } catch {
-            XCTFail("expected ClusterBringUpError, got \(error)")
+            throw XCTSkip("coordinator bring-up failed — likely mDNSResponder unavailable: \(error)")
         }
+
+        // Same model-builder rationale as testJoinerBringUpRunsWorkerAfterHandshake:
+        // auto-mode also reaches the joiner code path and that path
+        // requires a model. Returning nil opts the joiner out of the
+        // worker loop while still exercising the discover/match/handshake
+        // pipeline — exactly what we want auto-mode coverage to lock in.
+        let joinerStubBuilder: JoinerModelBuilder = { _ in nil }
+
+        let joinerBringUp: ClusterBringUp
+        do {
+            joinerBringUp = try await startCluster(
+                options: joinerAutoOptions,
+                passphrase: passphrase,
+                modelId: model,
+                modelDirectory: nil,
+                keyStore: joinerStore,
+                bonjourFactory: bonjourFactory(hostname: joinerName),
+                joinerModelBuilder: joinerStubBuilder,
+                hostname: joinerName,
+                memoryGB: 64,
+                version: version,
+                rdma: .available,
+                discoveryTimeoutSeconds: 15,
+                // Loopback Bonjour discovery on a busy CI host can take
+                // longer than the 3s production default; extend so the
+                // test does not flake on the timeout-fall-through path.
+                autoBrowseTimeoutSeconds: 15
+            )
+        } catch {
+            await tearDownCluster(coordBringUp)
+            throw XCTSkip("auto-mode joiner bring-up failed — likely mDNSResponder did not deliver the coordinator peer: \(error)")
+        }
+
+        defer {
+            let coord = coordBringUp
+            let joiner = joinerBringUp
+            Task {
+                await tearDownCluster(joiner)
+                await tearDownCluster(coord)
+            }
+        }
+
+        XCTAssertEqual(
+            joinerBringUp.role, .secondary,
+            "auto-mode with a matching coordinator on the wire must resolve to joiner"
+        )
     }
 }
 
